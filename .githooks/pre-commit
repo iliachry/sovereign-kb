@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# GWI Law L7 Pre-Commit Gate — Simplicity Favors Regularity (R_kanon = 1.0000)
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "${REPO_ROOT}/scripts/verify_law_l7.py" ]; then
+    python3 "${REPO_ROOT}/scripts/verify_law_l7.py" "${REPO_ROOT}" --strict
+elif command -v gwi >/dev/null 2>&1; then
+    gwi regularity "${REPO_ROOT}" --strict
+fi

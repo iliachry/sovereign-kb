@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Pre-push README drift gate: blocks pushes whose README.md has dead paths, phantom CLI commands,
+# undocumented new CLI commands/HTTP routes, or wrong hard-coded test counts.
+# Source of truth: ~/Projects/sovereign-kb/src/sovereign_kb/readme_check.py (stdlib only).
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+if [ -n "${README_CHECK:-}" ]; then
+    CHECKER="$README_CHECK"
+elif [ -f "$REPO_ROOT/src/sovereign_kb/readme_check.py" ]; then
+    CHECKER="$REPO_ROOT/src/sovereign_kb/readme_check.py"
+else
+    CHECKER="$HOME/Projects/sovereign-kb/src/sovereign_kb/readme_check.py"
+fi
+if [ ! -f "$CHECKER" ]; then
+    echo "[pre-push] readme_check.py not found at $CHECKER — refusing to push unchecked." >&2
+    echo "[pre-push] Set README_CHECK=/path/to/readme_check.py, or override knowingly: git push --no-verify" >&2
+    exit 1
+fi
+exec python3 "$CHECKER" "$REPO_ROOT" --pre-push

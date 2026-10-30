@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sovereign-kb"
+version = "1.4.0"
+description = "Searchable, local-first Markdown memory and quality gate for developers and AI coding agents (Python 3.10+ stdlib, SQLite FTS5, [[wikilink]] graph, zero runtime dependencies)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+  { name = "Ilias Chrysovergis", email = "iliachry@iliachry.gr" }
+]
+keywords = [
+  "markdown",
+  "knowledge-base",
+  "pkm",
+  "sqlite-fts5",
+  "bm25",
+  "wikilinks",
+  "obsidian",
+  "ai-agents",
+  "coding-agents",
+  "rag",
+  "hybrid-search",
+  "cli"
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Text Processing :: Indexing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/iliachry/sovereign-kb"
+Repository = "https://github.com/iliachry/sovereign-kb"
+Author = "https://iliachry.gr"
+
+[project.scripts]
+sovereign-kb = "sovereign_kb.cli:main"
+skb = "sovereign_kb.cli:main"
+gwi = "sovereign_kb.gwi:main_cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sovereign_kb"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

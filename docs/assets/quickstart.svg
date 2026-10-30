@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 430" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b111e"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <style>
+      .mono { font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace; font-size: 13.5px; }
+      .title { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12.5px; font-weight: 600; fill: #94a3b8; }
+      .prompt { fill: #38bdf8; font-weight: 700; }
+      .cmd { fill: #f8fafc; font-weight: 600; }
+      .arg { fill: #fbbf24; }
+      .comment { fill: #64748b; font-style: italic; }
+      .out { fill: #cbd5e1; }
+      .ok { fill: #34d399; font-weight: 700; }
+      .path { fill: #a78bfa; font-weight: 600; }
+    </style>
+  </defs>
+  <rect width="920" height="430" rx="12" fill="url(#bg)" stroke="#1e293b" stroke-width="1.5"/>
+  <rect width="920" height="38" rx="12" fill="#0f172a"/>
+  <rect y="26" width="920" height="12" fill="#0f172a"/>
+  <line x1="0" y1="38" x2="920" y2="38" stroke="#1e293b" stroke-width="1"/>
+  <circle cx="22" cy="19" r="6" fill="#ef4444"/>
+  <circle cx="42" cy="19" r="6" fill="#f59e0b"/>
+  <circle cx="62" cy="19" r="6" fill="#10b981"/>
+  <text x="460" y="24" text-anchor="middle" class="title">sovereign-kb (skb) — 60-Second Local Markdown Memory</text>
+
+  <g class="mono" transform="translate(26, 68)">
+    <text y="0" class="comment"># 1. Initialize a local Markdown vault (zero runtime dependencies, works 100% offline)</text>
+    <text y="22"><tspan class="prompt">$</tspan> <tspan class="cmd">skb init</tspan> <tspan class="arg">~/notes --no-embed --save-default</tspan></text>
+    <text y="44" class="out">[sovereign-kb init] Initialized vault at ~/notes (5 starter files written).</text>
+
+    <text y="80" class="comment"># 2. Capture an engineering decision from your terminal (or let your AI agent run it)</text>
+    <text y="102"><tspan class="prompt">$</tspan> <tspan class="cmd">skb capture</tspan> <tspan class="arg">"We chose SQLite FTS5 because the app must work offline."</tspan></text>
+    <text y="124" class="out">[sovereign-kb capture] Appended to 04-episodic/2026-10-30-log.md</text>
+
+    <text y="160" class="comment"># 3. Retrieve exact passages across your notes by keyword, meaning &amp; [[wikilinks]]</text>
+    <text y="182"><tspan class="prompt">$</tspan> <tspan class="cmd">skb search</tspan> <tspan class="arg">"SQLite offline"</tspan> <tspan class="cmd">-n 1</tspan></text>
+    <text y="206" class="ok">=== Search Results for: 'SQLite offline' (1 match) ===</text>
+    <text y="232"><tspan class="path">[1] 04-episodic/2026-10-30-log.md#L13-L15</tspan> <tspan class="out">— 2026-10-30 — Episodic Log &gt; 10:50</tspan></text>
+    <text y="254" class="out">    ## 10:50</text>
+    <text y="274" class="out">    - We chose SQLite FTS5 because the app must work offline.</text>
+
+    <text y="310" class="comment"># 4. Verify frontmatter, [[wikilinks]], graph connectivity &amp; index integrity</text>
+    <text y="332"><tspan class="prompt">$</tspan> <tspan class="cmd">skb verify</tspan></text>
+    <text y="354" class="ok">=== Sovereign-KB Deterministic Verification (6-Gate Doctor): PASS ===</text>
+  </g>
+</svg>
