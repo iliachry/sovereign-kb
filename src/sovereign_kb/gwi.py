@@ -4330,6 +4330,7 @@ def evaluate_craft_lenses(
                 + list(root.glob("book/*.pdf"))
                 + sorted(root.glob("docs/pdf/*.pdf"))
                 + sorted(root.glob("docs/*.pdf"))
+                + [tf.with_suffix(".pdf") for tf in tex_files if tf.with_suffix(".pdf").is_file()]
                 if root.is_dir()
                 else ([resolved.with_suffix(".pdf")] if resolved.with_suffix(".pdf").is_file() else [])
             )

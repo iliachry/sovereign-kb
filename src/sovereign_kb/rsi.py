@@ -409,26 +409,18 @@ def tune_retrieval_policy(
     evaluated_count = 1
 
     def _try_candidate(cand: dict[str, Any]) -> None:
-        nonlocal best_policy, best_eval, best_heldout, evaluated_count
+        nonlocal best_policy, best_eval, evaluated_count
         evaluated_count += 1
         ev = evaluate_retrieval_benchmark(conn, vault_dir, hybrid_retrieve_fn, policy=cand, probes=opt_probes)
-        ho_ev = (
-            evaluate_retrieval_benchmark(conn, vault_dir, hybrid_retrieve_fn, policy=cand, probes=heldout_probes)
-            if heldout_probes
-            else ev
-        )
-        heldout_non_regressing = ho_ev["objective_j"] >= best_heldout["objective_j"] - 1e-6 and ho_ev.get(
-            "ledger_intrusions", 0
-        ) <= best_heldout.get("ledger_intrusions", 0)
         if (
             ev["objective_j"] > best_eval["objective_j"] + 1e-6
-            and ev["mrr_at_5"] >= best_eval["mrr_at_5"]
+            and ev["mrr_at_5"] >= best_eval["mrr_at_5"] - 1e-6
+            and ev["ndcg_at_5"] >= best_eval["ndcg_at_5"] - 1e-6
+            and ev["recall_at_1"] >= best_eval["recall_at_1"] - 1e-6
             and ev.get("ledger_intrusions", 0) <= best_eval.get("ledger_intrusions", 0)
-            and heldout_non_regressing
         ):
             best_policy = copy.deepcopy(cand)
             best_eval = ev
-            best_heldout = ho_ev
 
     for k_rrf in (12.0, 18.0, 24.0, 30.0):
         for exact_boost in (0.025, 0.045, 0.065, 0.085):
@@ -456,6 +448,27 @@ def tune_retrieval_policy(
         cand = copy.deepcopy(best_policy)
         cand["graph_1hop_boost"] = graph_boost
         _try_candidate(cand)
+
+    # Evaluate held-out generalization probes strictly once after coordinate search completes (zero selection leakage)
+    if heldout_probes and best_eval["objective_j"] > base_eval["objective_j"] + 1e-6:
+        cand_heldout = evaluate_retrieval_benchmark(
+            conn, vault_dir, hybrid_retrieve_fn, policy=best_policy, probes=heldout_probes
+        )
+        heldout_ok = (
+            cand_heldout["objective_j"] >= base_heldout["objective_j"] - 1e-6
+            and cand_heldout["mrr_at_5"] >= base_heldout["mrr_at_5"] - 1e-6
+            and cand_heldout["ndcg_at_5"] >= base_heldout["ndcg_at_5"] - 1e-6
+            and cand_heldout["recall_at_1"] >= base_heldout["recall_at_1"] - 1e-6
+            and cand_heldout.get("ledger_intrusions", 0) <= base_heldout.get("ledger_intrusions", 0)
+        )
+        if heldout_ok:
+            best_heldout = cand_heldout
+        else:
+            best_policy = copy.deepcopy(base_policy)
+            best_eval = base_eval
+            best_heldout = base_heldout
+    elif not heldout_probes:
+        best_heldout = best_eval
 
     policy_file = policy_path(vault_dir)
     updated = best_eval["objective_j"] > base_eval["objective_j"] + 1e-6 or not policy_file.is_file()

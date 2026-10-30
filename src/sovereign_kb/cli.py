@@ -3058,7 +3058,7 @@ def _scan_native_usage(days: int) -> dict:
                     obj = json.loads(line)
                     if obj.get("type") == "USER_INPUT":
                         txt = obj.get("content", "")
-                        m_match = re.search(r"Model Selection` from .+ to ([^.\n<]+)", txt)
+                        m_match = re.search(r"Model Selection` from [^\n]+? to ([^.\n<]+)", txt)
                         if m_match:
                             cur_model = m_match.group(1).strip()
                     elif obj.get("type") == "PLANNER_RESPONSE":
