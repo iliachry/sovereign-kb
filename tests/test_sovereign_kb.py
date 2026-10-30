@@ -2047,3 +2047,31 @@ def test_obsidian_lossless_heal_offline_search_and_filtered_retrieval(
     capsys.readouterr()
     assert "Not evaluated" in dash_html.read_text(encoding="utf-8")
     assert "0.9640 (init)" not in dash_html.read_text(encoding="utf-8")
+
+
+def test_creative_mode_resumption_packet_f15(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify F-15: `skb resume <mode>` parses Section 5 creative mode packets and latest episodic log."""
+    vault = tmp_path / "resume-vault"
+    main(["init", str(vault), "--minimal", "--no-embed"])
+    capsys.readouterr()
+    now_file = vault / "01-now" / "now.md"
+    now_file.parent.mkdir(parents=True, exist_ok=True)
+    now_file.write_text(
+        "---\ntitle: Now\ntype: now\nupdated: 2026-10-30\ntags: [now]\n---\n\n"
+        "# Now\n\n## 5. Four Creative Mode Resumption Packets (`kb resume <mode>`)\n\n"
+        "### 5.1 Mode 1: Deep Mathematics & LaTeX Manuscripts (`math`)\n"
+        "- **Active Repositories & Paths**:\n  - `~/GitLab/paper2-hierarchical-edge-cloud`\n"
+        "- **Immediate Next Command**:\n  ```bash\n  kb gwi audit ~/GitLab/paper2-hierarchical-edge-cloud --profile paper\n  ```\n",
+        encoding="utf-8",
+    )
+    ep_dir = vault / "04-episodic"
+    ep_dir.mkdir(parents=True, exist_ok=True)
+    (ep_dir / "2026-10-30-log.md").write_text(
+        "---\ntitle: Log\ntype: episodic\nupdated: 2026-10-30\ntags: [log]\n---\n\n"
+        "# Log\n\n## 1. Completed Paper 2 Verification\n",
+        encoding="utf-8",
+    )
+    main(["--vault", str(vault), "resume", "math", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "math"
+    assert "paper2-hierarchical-edge-cloud" in payload["packets"]["math"]["body"]
