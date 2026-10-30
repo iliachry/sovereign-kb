@@ -1999,7 +1999,7 @@ def evaluate_paper_profile(
     severe_overfull = [pt for pt in overfull_pts if pt > 3.0]
     max_overfull_pt = max(overfull_pts) if overfull_pts else 0.0
     has_microtype = "microtype" in src
-    resizebox_tabular = re.findall(r"\\resizebox\s*\{[^}]*\}\s*\{[^}]*\}\s*\{\s*\\begin\{tabular", src)
+    resizebox_tabular = re.findall(r"\\resizebox\s*\{[^}]*\}\s*\{[^}]*\}\s*\{(?:%[^\n]*\n|\s)*\\begin\{tabular", src)
     has_bare_hyperref = ("\\usepackage{hyperref}" in src) and ("colorlinks" not in src and "hidelinks" not in src)
     s_perc = (
         9.6
