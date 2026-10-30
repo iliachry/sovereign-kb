@@ -1999,10 +1999,14 @@ def evaluate_paper_profile(
     severe_overfull = [pt for pt in overfull_pts if pt > 3.0]
     max_overfull_pt = max(overfull_pts) if overfull_pts else 0.0
     has_microtype = "microtype" in src
+    resizebox_tabular = re.findall(r"\\resizebox\s*\{[^}]*\}\s*\{[^}]*\}\s*\{\s*\\begin\{tabular", src)
+    has_bare_hyperref = ("\\usepackage{hyperref}" in src) and ("colorlinks" not in src and "hidelinks" not in src)
     s_perc = (
         9.6
         - min(2.8, len(severe_overfull) * 0.45 + (1.5 if max_overfull_pt > 10.0 else 0.0))
         - (0.4 if not has_microtype else 0.0)
+        - (1.2 if resizebox_tabular else 0.0)
+        - (0.8 if has_bare_hyperref else 0.0)
     )
     if severe_overfull:
         blockers.append(
@@ -2015,6 +2019,24 @@ def evaluate_paper_profile(
         )
     else:
         notes.append(f"Verified 0 `Overfull \\hbox` > 3.0pt warnings in `{main_tex.name}`.")
+    if resizebox_tabular:
+        blockers.append(
+            {
+                "id": "GWI-PAP-P02",
+                "severity": "P1",
+                "dimension": "S_perc (Table Readability & Anti-Resizebox)",
+                "message": f"`{main_tex.name}` contains {len(resizebox_tabular)} `\\resizebox` wrapping `\\begin{{tabular}}` (masks Overfull \\hbox by shrinking table font; use `\\scriptsize`/`\\footnotesize` with `tabularx`).",
+            }
+        )
+    if has_bare_hyperref:
+        blockers.append(
+            {
+                "id": "GWI-PAP-P03",
+                "severity": "P1",
+                "dimension": "S_perc (Hyperlink Styling)",
+                "message": f"`{main_tex.name}` loads `\\usepackage{{hyperref}}` without `colorlinks=true` or `hidelinks` (draws neon viewer boxes around citations/references).",
+            }
+        )
 
     # 3. Tier III (S_act / Utilitas): Citation-to-Bibliography Parity & Mathematical Rigor
     cites = {
@@ -4349,6 +4371,20 @@ def evaluate_craft_lenses(
                         "status": "PASS",
                     }
                 )
+            elif len(tex_files) > 1 or "\\begin{table" in tex_corpus or "\\begin{tabular" in tex_corpus:
+                score = min(score, 6.8)
+                veto_triggered = True
+                probe_findings.append(
+                    "VETO [ty.widows_float_drift]: Missing `\\usepackage{microtype}` or `\\usepackage{booktabs}` in multi-file/tabular manuscript"
+                )
+                probe_measurements.append(
+                    {
+                        "id": "ty.widows_float_drift",
+                        "value": f"microtype={has_microtype},booktabs={has_booktabs}",
+                        "target": "microtype+booktabs",
+                        "status": "VETO",
+                    }
+                )
 
             # Probe 1: Poppler `pdffonts` + Binary Stream Type-3 Font & Embedding Audit
             if pdf_files:
@@ -4424,6 +4460,31 @@ def evaluate_craft_lenses(
                             "status": "VETO",
                         }
                     )
+
+                pdftoppm_bin = shutil.which("pdftoppm")
+                pdf_raw = pdf_files[0].read_bytes()
+                if pdftoppm_bin and re.search(rb"/Type\s*/Pages?\b", pdf_raw):
+                    render_dir = Path("/tmp") / f"gwi_paper_pages_{root.name}"
+                    render_dir.mkdir(parents=True, exist_ok=True)
+                    for old_png in render_dir.glob("page*.png"):
+                        old_png.unlink(missing_ok=True)
+                    subprocess.run(
+                        [pdftoppm_bin, "-png", "-r", "150", str(pdf_files[0]), str(render_dir / "page")],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    rendered_pngs = sorted(render_dir.glob("page*.png"))
+                    if rendered_pngs:
+                        probe_findings.append(
+                            f"PASS [ty.visual_page_render]: Rendered {len(rendered_pngs)} page(s) at 150 DPI to `{render_dir}` (mandatory visual inspection via `read_file`)"
+                        )
+                    else:
+                        score = min(score, 6.5)
+                        veto_triggered = True
+                        probe_findings.append(
+                            f"VETO [ty.visual_page_render]: `pdftoppm -png -r 150` failed to render pages from `{pdf_files[0].name}`"
+                        )
             else:
                 unmeasured_count += 1
                 probe_findings.append(
@@ -4434,7 +4495,7 @@ def evaluate_craft_lenses(
                 )
 
             for b in report.get("blockers") or []:
-                if b["id"] in ("GWI-PAP-S02", "GWI-PAP-S03", "GWI-PAP-A01") or (
+                if b["id"] in ("GWI-PAP-S02", "GWI-PAP-S03", "GWI-PAP-A01", "GWI-PAP-P02", "GWI-PAP-P03") or (
                     b["id"] == "GWI-PAP-P01" and b.get("severity") == "P0"
                 ):
                     score = min(score, 6.5)

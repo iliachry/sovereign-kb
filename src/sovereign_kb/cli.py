@@ -1960,12 +1960,17 @@ if [ ! -f "$TEX_MAIN" ] && [ -f "main.tex" ]; then TEX_MAIN="main.tex"; fi
 TEX_BASE="${TEX_MAIN%.tex}"
 if [ -f "$TEX_MAIN" ] && command -v latexmk >/dev/null 2>&1; then
   latexmk -pdf -interaction=nonstopmode -halt-on-error "$TEX_MAIN"
-  # Stage 5: Zero undefined citations/references & Overfull hbox check
+  # Stage 5: Zero undefined citations/references, Overfull hbox & Anti-resizebox tabular check
   ! grep -E "LaTeX Warning: (Citation|Reference).*undefined" "${TEX_BASE}.log" || exit 1
   ! grep -E "LaTeX Warning: Label .* multiply defined" "${TEX_BASE}.log" || exit 1
-  # Stage 6: IEEE PDF eXpress Type-3 font ban check
+  ! grep -rnE '\\resizebox\\{[^}]*\\}\\{[^}]*\\}\\{\\begin\\{tabular' . --include="*.tex" || exit 1
+  # Stage 6: IEEE PDF eXpress Type-3 font ban & 150-DPI visual page rendering
   if command -v pdffonts >/dev/null 2>&1; then
     ! pdffonts "${TEX_BASE}.pdf" | awk 'NR>2 {print $2, $3}' | grep -E "Type 3" || exit 1
+  fi
+  if command -v pdftoppm >/dev/null 2>&1; then
+    mkdir -p artifacts/pages && rm -f artifacts/pages/page*.png
+    pdftoppm -png -r 150 "${TEX_BASE}.pdf" artifacts/pages/page
   fi
 fi""",
         "gitignore": "*.aux\n*.bbl\n*.blg\n*.fdb_latexmk\n*.fls\n*.log\n*.out\n*.synctex.gz\n*.toc\nartifacts/\n__pycache__/\n.venv/\n.DS_Store\n",
