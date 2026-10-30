@@ -131,6 +131,7 @@ skb dashboard --export
 | Atomically pull, sync, verify, commit, and push vault changes to Git | `skb push -m "docs: update notes"` |
 | Open the interactive `[[Wikilink]]` Knowledge Graph dashboard | `skb dashboard` |
 | Print your Tier-0 profile (`00-identity/README-me.md` + `01-now/now.md`) | `skb me` |
+| Print zero-context-tax Creative Mode Resumption Packet(s) (`all`, `math`, `compute`, `spatial`, `writing`) | `skb resume math` |
 | Show vault & index status | `skb status` |
 
 ---

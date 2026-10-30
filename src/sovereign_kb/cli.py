@@ -1536,6 +1536,70 @@ def cmd_me(args) -> None:
         sys.exit(1)
 
 
+def cmd_resume(args) -> None:
+    """Print zero-context-tax Creative Mode Resumption Packet(s) from 01-now/now.md."""
+    vault_dir = resolve_vault_dir(getattr(args, "vault", None), must_exist=True)
+    mode = (getattr(args, "mode", None) or "all").strip().lower()
+    now_path = vault_dir / "01-now" / "now.md"
+    if not now_path.is_file():
+        print(f"Error: {now_path} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    text = now_path.read_text(encoding="utf-8", errors="replace")
+    packets: dict[str, dict[str, str]] = {}
+    current_key: str | None = None
+    current_title = ""
+    current_lines: list[str] = []
+
+    for line in text.splitlines():
+        m = re.match(r"^###\s+5\.\d+\s+(.+?)\s*\(`(math|compute|spatial|writing)`\)\s*$", line.strip())
+        if m:
+            if current_key and current_lines:
+                packets[current_key] = {
+                    "mode": current_key,
+                    "title": current_title,
+                    "body": "\n".join(current_lines).strip(),
+                }
+            current_title = m.group(1).strip()
+            current_key = m.group(2).strip().lower()
+            current_lines = [line]
+            continue
+        if current_key is not None:
+            if line.startswith("## ") and not line.startswith("### "):
+                packets[current_key] = {
+                    "mode": current_key,
+                    "title": current_title,
+                    "body": "\n".join(current_lines).strip(),
+                }
+                current_key = None
+                current_lines = []
+            else:
+                current_lines.append(line)
+
+    if current_key and current_lines:
+        packets[current_key] = {
+            "mode": current_key,
+            "title": current_title,
+            "body": "\n".join(current_lines).strip(),
+        }
+
+    selected = packets if mode == "all" else ({mode: packets[mode]} if mode in packets else {})
+    if not selected:
+        print(
+            f"Error: Unknown or missing resumption mode '{mode}'. Available: all, {', '.join(packets.keys())}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if getattr(args, "json", False):
+        print(json.dumps({"vault": str(vault_dir), "mode": mode, "packets": selected}, indent=2, ensure_ascii=False))
+        return
+
+    print(f"=== Sovereign-KB Creative Mode Resumption ({mode.upper()}) ===")
+    for _, pkt in selected.items():
+        print(f"\n{pkt['body']}")
+
+
 def cmd_status(args) -> None:
     vault_dir = resolve_vault_dir(getattr(args, "vault", None), must_exist=True)
     conn = get_db(vault_dir)
@@ -3551,6 +3615,18 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     p_push.add_argument("-m", "--message", help="Custom commit message")
 
     sub.add_parser("me", help="Print Tier-0 identity & current focus")
+    p_resume = sub.add_parser(
+        "resume",
+        help="Print zero-context-tax Creative Mode Resumption Packet(s) (all, math, compute, spatial, writing)",
+    )
+    p_resume.add_argument(
+        "mode",
+        nargs="?",
+        choices=("all", "math", "compute", "spatial", "writing"),
+        default="all",
+        help="Creative mode packet to display (default: all)",
+    )
+    p_resume.add_argument("--json", action="store_true", help="Emit JSON output")
     sub.add_parser("status", help="Show vault and index telemetry")
     for u_alias in ("usage", "finops"):
         u_help = (
@@ -3982,6 +4058,8 @@ def main(argv: list[str] | None = None) -> None:
         cmd_git_sync(args)
     elif args.cmd == "me":
         cmd_me(args)
+    elif args.cmd == "resume":
+        cmd_resume(args)
     else:
         cmd_status(args)
 
