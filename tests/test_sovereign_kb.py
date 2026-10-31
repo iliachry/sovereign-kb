@@ -2233,6 +2233,37 @@ def test_human_wedge_anti_palantir_gate(tmp_path: Path) -> None:
     assert w_routes["wedge_files_count"] == 1
     assert w_routes["passed"] is True
 
+    # 3. Round-2 Astra counterexamples:
+    # - Hidden sibling before visible <canvas>, aria-hidden="true" without hidden, CSS display:block override
+    adv_sibling = bad_dir / "public" / "snap.html"
+    adv_sibling.write_text(
+        "<!DOCTYPE html><html><head><style>"
+        ".wedge-result { display: none; } .wedge-result { display: block; }"
+        ".wrap { width: 1200px; grid-template-columns: repeat(6, 1fr); }"
+        "</style></head><body>"
+        "<div hidden>Hidden sibling</div>"
+        "<section aria-hidden='true' class='wedge-result'><canvas id='snap-canvas'></canvas></section>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    w_sib = _audit_human_wedge_anti_palantir(bad_dir, [adv_sibling])
+    assert w_sib["passed"] is False
+    assert any("[W1-Width]" in v for v in w_sib["violations"])
+    assert any("[W1-SplitGrid]" in v for v in w_sib["violations"])
+    assert any("[W3-ProgressiveDisclosure]" in v for v in w_sib["violations"])
+
+    # - Unrelated JSX conditional preceding visible <canvas> outside the conditional block
+    app_snap.write_text(
+        "export default function SnapPage() { return (<main style={{ maxWidth: '540px' }}>"
+        "{hasPhoto && (<div>Badge</div>)}"
+        "<canvas id='snap-preview-canvas' />"
+        "</main>); }",
+        encoding="utf-8",
+    )
+    w_jsx_unguarded = _audit_human_wedge_anti_palantir(bad_dir, [app_snap])
+    assert w_jsx_unguarded["passed"] is False
+    assert any("[W3-ProgressiveDisclosure]" in v for v in w_jsx_unguarded["violations"])
+
 
 def test_sovereign_audit_registry_subprojects_and_incremental_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

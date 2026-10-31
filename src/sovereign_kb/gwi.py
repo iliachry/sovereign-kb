@@ -3459,10 +3459,10 @@ def _audit_human_wedge_anti_palantir(root: Path, ui_files: list[Path]) -> dict[s
             re.sub(r"@media\b[^{]+", " ", style_blocks, flags=re.IGNORECASE) + "\n" + inline_styles + "\n" + jsx_styles
         )
 
-        # W1a: Check max-width / maxWidth > 680px (supporting both px and rem)
+        # W1a: Check max-width / maxWidth / width > 680px (supporting both px and rem)
         wide_px: list[int] = []
         for val_str, unit in re.findall(
-            r"(?:max-width|maxWidth)\s*:\s*['\"]?(\d+(?:\.\d+)?)\s*(px|rem)?\b",
+            r"(?:max-width|maxWidth|(?<![-\w])width)\s*:\s*['\"]?(\d+(?:\.\d+)?)\s*(px|rem)?\b",
             css_scope,
             flags=re.IGNORECASE,
         ):
@@ -3471,16 +3471,16 @@ def _audit_human_wedge_anti_palantir(root: Path, ui_files: list[Path]) -> dict[s
             if px_equiv > 680:
                 wide_px.append(px_equiv)
 
-        wide_tw = re.findall(r"\bmax-w-(?:3xl|4xl|5xl|6xl|7xl|screen-lg|screen-xl|screen-2xl)\b", raw)
+        wide_tw = re.findall(r"\b(?:max-)?w-(?:3xl|4xl|5xl|6xl|7xl|screen-lg|screen-xl|screen-2xl)\b", raw)
         if wide_px or wide_tw:
-            detail = f"max-width={wide_px[0]}px" if wide_px else f"class={wide_tw[0]}"
+            detail = f"width={wide_px[0]}px" if wide_px else f"class={wide_tw[0]}"
             wf_violations.append(
                 f"{rel_name} [W1-Width]: wide desktop container ({detail} > 680px single-column budget)"
             )
 
         # W1b: Check multi-column split dashboard grids, wide flex split panes, or <aside> operator sidebars
         split_grid_css = re.findall(
-            r"(?:grid-template-columns|gridTemplateColumns)\s*:\s*['\"]?(?:1fr\s+1fr|1\.\d+fr\s+1fr|\d+fr\s+\d+fr|repeat\(\s*[234]\s*,)",
+            r"(?:grid-template-columns|gridTemplateColumns)\s*:\s*['\"]?(?:1fr\s+1fr|1\.\d+fr\s+1fr|\d+fr\s+\d+fr|repeat\(\s*(?:[2-9]|1\d|auto-fit|auto-fill)\s*,)",
             css_scope,
             flags=re.IGNORECASE,
         )
@@ -3491,7 +3491,7 @@ def _audit_human_wedge_anti_palantir(root: Path, ui_files: list[Path]) -> dict[s
             )
             if (float(val) * 16.0 if unit.lower() == "rem" else float(val)) >= 320.0
         ]
-        split_grid_tw = re.findall(r"\b(?:md|lg|xl):grid-cols-(?:2|3|4|12)\b|\bgrid-cols-12\b", raw)
+        split_grid_tw = re.findall(r"\b(?:(?:sm|md|lg|xl|2xl):)?grid-cols-(?:[2-9]|1[0-2])\b", raw)
         has_aside = bool(re.search(r"<aside\b", raw, flags=re.IGNORECASE))
         if split_grid_css or split_flex_css or split_grid_tw or has_aside:
             g_det = (
@@ -3522,40 +3522,84 @@ def _audit_human_wedge_anti_palantir(root: Path, ui_files: list[Path]) -> dict[s
                 f"{rel_name} [W2-JargonLeak]: B2B operator telemetry exposed to consumer ({', '.join(leaked_terms)})"
             )
 
-        # W3: Progressive Disclosure on `snap` routes (Step 2/3 must actually be gated and wrap diagnosis/chat)
+        # W3: Progressive Disclosure on `snap` routes (Step 2/3 must actually contain diagnosis/chat inside a hidden gate)
         if wedge_kind == "snap":
             has_progressive_gate = False
             if wf.suffix.lower() in (".tsx", ".jsx"):
-                cond_match = re.search(
-                    r"\{\s*[a-zA-Z_$][\w$]*(?:\s*(?:>=|>|===|!==)\s*[^&?]+)?\s*(?:&&|\?)\s*\(",
+                for cond_m in re.finditer(
+                    r"\{\s*(?:hasPhoto|result|diagnosis|activeResult|photoSelected|showResult|showAdvice|selectedPreset|step\s*>=\s*2)\s*(?:&&|\?)\s*\(",
                     raw,
-                )
-                diag_pos = re.search(
-                    r"(?:snap-preview-canvas|snap-ai-marketplace-panel|canvas\b|chat)", raw, flags=re.IGNORECASE
-                )
-                if cond_match and (not diag_pos or cond_match.start() < diag_pos.start()):
-                    has_progressive_gate = True
+                ):
+                    # Find matching closing brace `}` for the opening `{` at cond_m.start()
+                    depth = 0
+                    end_idx = len(raw)
+                    for idx in range(cond_m.start(), len(raw)):
+                        if raw[idx] == "{":
+                            depth += 1
+                        elif raw[idx] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                end_idx = idx
+                                break
+                    gated_slice = raw[cond_m.start() : end_idx]
+                    if re.search(r"(?:snap-preview-canvas|snap-ai-marketplace-panel|<canvas\b)", gated_slice):
+                        has_progressive_gate = True
+                        break
             else:
-                hidden_classes = set(
-                    re.findall(
-                        r"\.([a-zA-Z0-9_-]+)\s*\{[^}]*display\s*:\s*none",
-                        style_blocks,
-                        flags=re.IGNORECASE | re.DOTALL,
-                    )
-                )
-                gate_tag_match = None
-                for m in re.finditer(r"<(section|div)\b([^>]*)>", visible_markup, flags=re.IGNORECASE):
-                    attrs = m.group(2)
-                    if re.search(r"\bhidden\b|display\s*:\s*none", attrs, flags=re.IGNORECASE):
-                        gate_tag_match = m
-                        break
-                    cls_m = re.search(r'\bclass\s*=\s*["\']([^"\']+)["\']', attrs, flags=re.IGNORECASE)
-                    if cls_m and any(c in hidden_classes for c in cls_m.group(1).split()):
-                        gate_tag_match = m
-                        break
-                diag_pos = re.search(r"(?:<canvas\b|snap-chat|chat-thread)", visible_markup, flags=re.IGNORECASE)
-                if gate_tag_match and diag_pos and gate_tag_match.start() < diag_pos.start():
-                    has_progressive_gate = True
+                from html.parser import HTMLParser
+
+                # Track effective `display` value per single-class selector in CSS order
+                class_display: dict[str, str] = {}
+                for sel, body in re.findall(r"([^{}]+)\{([^}]*)\}", style_blocks):
+                    sel_clean = sel.strip()
+                    # Only bare class selectors like `.wedge-result` set default first-paint state
+                    if re.fullmatch(r"\.[a-zA-Z0-9_-]+", sel_clean):
+                        cls_name = sel_clean[1:]
+                        for disp_val in re.findall(r"(?<![-\w])display\s*:\s*([a-zA-Z-]+)", body, flags=re.IGNORECASE):
+                            class_display[cls_name] = disp_val.lower()
+                hidden_classes = {c for c, dv in class_display.items() if dv == "none"}
+
+                class _WedgeDomInspector(HTMLParser):
+                    def __init__(self) -> None:
+                        super().__init__()
+                        self.stack: list[tuple[str, bool]] = []
+                        self.canvas_found = False
+                        self.canvas_all_hidden = True
+
+                    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                        attr_map = {k.lower(): (v or "") for k, v in attrs}
+                        is_hidden_here = False
+                        if "hidden" in attr_map:
+                            is_hidden_here = True
+                        style_val = attr_map.get("style", "")
+                        if style_val:
+                            disps = re.findall(r"(?<![-\w])display\s*:\s*([a-zA-Z-]+)", style_val, flags=re.IGNORECASE)
+                            if disps and disps[-1].lower() == "none":
+                                is_hidden_here = True
+                        cls_tokens = attr_map.get("class", "").split()
+                        if any(c in hidden_classes for c in cls_tokens) and not any(
+                            class_display.get(c) in ("block", "flex", "grid", "inline") for c in cls_tokens
+                        ):
+                            is_hidden_here = True
+                        ancestor_hidden = any(h for _, h in self.stack)
+                        effective_hidden = ancestor_hidden or is_hidden_here
+                        if tag.lower() == "canvas" or attr_map.get("id", "") in ("snap-chat-thread", "snap-result"):
+                            if tag.lower() == "canvas":
+                                self.canvas_found = True
+                                if not effective_hidden:
+                                    self.canvas_all_hidden = False
+                        self.stack.append((tag.lower(), effective_hidden))
+
+                    def handle_endtag(self, tag: str) -> None:
+                        t_low = tag.lower()
+                        for i in range(len(self.stack) - 1, -1, -1):
+                            if self.stack[i][0] == t_low:
+                                del self.stack[i:]
+                                break
+
+                inspector = _WedgeDomInspector()
+                inspector.feed(visible_markup)
+                has_progressive_gate = inspector.canvas_found and inspector.canvas_all_hidden
 
             if not has_progressive_gate:
                 wf_violations.append(
