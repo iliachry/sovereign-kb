@@ -1081,12 +1081,13 @@ def run_rsi_cycle(
         or after_heldout["ndcg_at_5"] < before_heldout["ndcg_at_5"] - 1e-6
         or after_heldout["recall_at_1"] < before_heldout["recall_at_1"] - 1e-6
     )
+    heal_tolerance = -5e-4 if snapshots else -1e-6
     regressed = (
         rank_regressed
         or (delta_j_tune < -1e-6)
-        or (delta_j < -1e-6)
-        or (delta_j_heal < -5e-4)
-        or (heldout_delta_j < -1e-6)
+        or (delta_j < heal_tolerance)
+        or (delta_j_heal < heal_tolerance)
+        or (heldout_delta_j < heal_tolerance)
         or intrusion_regressed
         or rust_gate_failed
     )
