@@ -2071,6 +2071,7 @@ if [ -f scripts/record_walkthrough.mjs ]; then node scripts/record_walkthrough.m
 ARCHETYPE_SKILL_ROUTING: dict[str, list[tuple[str, str]]] = {
     "web-ts-3d-gis": [
         ("goldwood-gwi", "~/.gemini/config/skills/goldwood-gwi/SKILL.md"),
+        ("geospatial-digital-twins", "~/.gemini/config/skills/geospatial-digital-twins/SKILL.md"),
         ("vercel-react-craft", "~/.gemini/config/skills/vercel-react-craft/SKILL.md"),
         ("ui-craft-polish", "~/.gemini/config/skills/ui-craft-polish/SKILL.md"),
         ("frontend-design", "~/.gemini/config/skills/frontend-design/SKILL.md"),
@@ -2088,10 +2089,13 @@ ARCHETYPE_SKILL_ROUTING: dict[str, list[tuple[str, str]]] = {
         ("remotion-video", "~/.gemini/config/skills/remotion-video/SKILL.md"),
         ("webapp-testing", "~/.gemini/config/skills/webapp-testing/SKILL.md"),
         ("cloudflare-platform", "~/.gemini/config/skills/cloudflare-platform/SKILL.md"),
+        ("eu-grants-and-venture-ops", "~/.gemini/config/skills/eu-grants-and-venture-ops/SKILL.md"),
     ],
     "python-uv-ai": [
         ("goldwood-gwi", "~/.gemini/config/skills/goldwood-gwi/SKILL.md"),
         ("gx10-cluster", "~/.gemini/config/skills/gx10-cluster/SKILL.md"),
+        ("stochastic-math-econometrics", "~/.gemini/config/skills/stochastic-math-econometrics/SKILL.md"),
+        ("web3-fintech-settlement", "~/.gemini/config/skills/web3-fintech-settlement/SKILL.md"),
         ("huggingface-ml", "~/.gemini/config/skills/huggingface-ml/SKILL.md"),
         ("mcp-builder", "~/.gemini/config/skills/mcp-builder/SKILL.md"),
         ("supabase-postgres", "~/.gemini/config/skills/supabase-postgres/SKILL.md"),
@@ -2099,12 +2103,14 @@ ARCHETYPE_SKILL_ROUTING: dict[str, list[tuple[str, str]]] = {
     ],
     "rust-systems": [
         ("goldwood-gwi", "~/.gemini/config/skills/goldwood-gwi/SKILL.md"),
+        ("rust-go-systems", "~/.gemini/config/skills/rust-go-systems/SKILL.md"),
         ("bevy-gamedev", "~/.gemini/config/skills/bevy-gamedev/SKILL.md"),
         ("threejs-webgpu", "~/.gemini/config/skills/threejs-webgpu/SKILL.md"),
         ("principal-engineering", "~/.gemini/config/skills/principal-engineering/SKILL.md"),
     ],
     "spatial-xr-ble": [
         ("goldwood-gwi", "~/.gemini/config/skills/goldwood-gwi/SKILL.md"),
+        ("iot-embedded-ble", "~/.gemini/config/skills/iot-embedded-ble/SKILL.md"),
         ("threejs-webgpu", "~/.gemini/config/skills/threejs-webgpu/SKILL.md"),
         ("unity", "~/.gemini/config/plugins/unity/skills/unity-cli/SKILL.md"),
         ("remotion-video", "~/.gemini/config/skills/remotion-video/SKILL.md"),
@@ -2113,6 +2119,8 @@ ARCHETYPE_SKILL_ROUTING: dict[str, list[tuple[str, str]]] = {
     "paper-ieee-arxiv": [
         ("goldwood-gwi", "~/.gemini/config/skills/goldwood-gwi/SKILL.md"),
         ("latex-paper-craft", "~/.gemini/config/skills/latex-paper-craft/SKILL.md"),
+        ("stochastic-math-econometrics", "~/.gemini/config/skills/stochastic-math-econometrics/SKILL.md"),
+        ("eu-grants-and-venture-ops", "~/.gemini/config/skills/eu-grants-and-venture-ops/SKILL.md"),
         ("pdf", "~/.gemini/config/skills/pdf/SKILL.md"),
         ("science-arxiv", "~/.gemini/config/plugins/science/skills/literature_search_arxiv/SKILL.md"),
         ("science-openalex", "~/.gemini/config/plugins/science/skills/literature_search_openalex/SKILL.md"),
@@ -2120,6 +2128,7 @@ ARCHETYPE_SKILL_ROUTING: dict[str, list[tuple[str, str]]] = {
     ],
     "game-sim-3d": [
         ("goldwood-gwi", "~/.gemini/config/skills/goldwood-gwi/SKILL.md"),
+        ("geospatial-digital-twins", "~/.gemini/config/skills/geospatial-digital-twins/SKILL.md"),
         ("godot-gamedev", "~/.gemini/config/skills/godot-gamedev/SKILL.md"),
         ("bevy-gamedev", "~/.gemini/config/skills/bevy-gamedev/SKILL.md"),
         ("unity", "~/.gemini/config/plugins/unity/skills/unity-cli/SKILL.md"),
@@ -2134,18 +2143,25 @@ GWI_PROFILE_SKILL_ROUTING: dict[str, list[str]] = {
         "vercel-react-craft",
         "ui-craft-polish",
         "frontend-design",
+        "geospatial-digital-twins",
         "webapp-testing",
         "cloudflare-platform",
         "supabase-postgres",
+        "web3-fintech-settlement",
+        "eu-grants-and-venture-ops",
         "chrome-devtools-plugin",
         "modern-web-guidance-plugin",
     ],
     "sim": [
         "goldwood-gwi",
         "threejs-webgpu",
+        "geospatial-digital-twins",
         "godot-gamedev",
         "bevy-gamedev",
         "unity",
+        "rust-go-systems",
+        "iot-embedded-ble",
+        "stochastic-math-econometrics",
         "gx10-cluster",
     ],
     "video": [
@@ -2157,6 +2173,8 @@ GWI_PROFILE_SKILL_ROUTING: dict[str, list[str]] = {
     "paper": [
         "goldwood-gwi",
         "latex-paper-craft",
+        "stochastic-math-econometrics",
+        "eu-grants-and-venture-ops",
         "pdf",
         "science",
         "huggingface-ml",
@@ -2166,7 +2184,14 @@ GWI_PROFILE_SKILL_ROUTING: dict[str, list[str]] = {
 }
 
 GWI_LENS_SKILL_ROUTING: dict[str, list[str]] = {
-    "technical-artist": ["goldwood-gwi", "threejs-webgpu", "godot-gamedev", "bevy-gamedev", "unity"],
+    "technical-artist": [
+        "goldwood-gwi",
+        "threejs-webgpu",
+        "geospatial-digital-twins",
+        "godot-gamedev",
+        "bevy-gamedev",
+        "unity",
+    ],
     "ux-ergonomics": [
         "goldwood-gwi",
         "ui-craft-polish",
@@ -2183,7 +2208,15 @@ GWI_LENS_SKILL_ROUTING: dict[str, list[str]] = {
         "optimize-audio",
         "audio-setup-mixers",
     ],
-    "typography-editor": ["goldwood-gwi", "latex-paper-craft", "pdf", "docx", "pptx", "xlsx"],
+    "typography-editor": [
+        "goldwood-gwi",
+        "latex-paper-craft",
+        "eu-grants-and-venture-ops",
+        "pdf",
+        "docx",
+        "pptx",
+        "xlsx",
+    ],
     "web-perf-edge": [
         "goldwood-gwi",
         "vercel-react-craft",
@@ -2191,11 +2224,13 @@ GWI_LENS_SKILL_ROUTING: dict[str, list[str]] = {
         "memory-leak-debugging",
         "cookie-debugging",
         "cloudflare-platform",
+        "iot-embedded-ble",
         "optimize-web",
     ],
     "data-api-architect": [
         "goldwood-gwi",
         "supabase-postgres",
+        "web3-fintech-settlement",
         "bigquery-sql",
         "dbt-bigquery",
         "dataform-bigquery",
@@ -2209,6 +2244,7 @@ GWI_LENS_SKILL_ROUTING: dict[str, list[str]] = {
     "ai-ml-science": [
         "goldwood-gwi",
         "gx10-cluster",
+        "stochastic-math-econometrics",
         "gemini-api-dev",
         "google-antigravity-sdk",
         "huggingface-ml",
@@ -2219,6 +2255,7 @@ GWI_LENS_SKILL_ROUTING: dict[str, list[str]] = {
     "principal-verification": [
         "goldwood-gwi",
         "principal-engineering",
+        "rust-go-systems",
         "webapp-testing",
         "managing-python-dependencies",
         "uv",
