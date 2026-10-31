@@ -217,9 +217,7 @@ def surface_issues(repo: Path, base: str, head: str, readme: str, clis: set[str]
         if f != "README.md" and (f.endswith("/README.md") or (f.startswith("docs/") and f.endswith(".md"))):
             docs += "\n" + (_show(repo, head, f) or "")
     documented_c = (
-        {sub for _, sub in advertised_commands(docs, clis)}
-        if clis
-        else set(re.findall(r"\b([a-z][\w-]*)\b", docs))
+        {sub for _, sub in advertised_commands(docs, clis)} if clis else set(re.findall(r"\b([a-z][\w-]*)\b", docs))
     )
     documented_r = {_norm_route(m) for m in README_ROUTE_RE.findall(docs)}
     issues: list[str] = []

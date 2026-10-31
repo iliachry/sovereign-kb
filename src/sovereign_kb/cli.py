@@ -2223,7 +2223,7 @@ GWI_LENS_SKILL_ROUTING: dict[str, list[str]] = {
         "managing-python-dependencies",
         "uv",
         "credentials",
-        "personal-codex",
+        "personal-kb",
     ],
 }
 
@@ -3724,6 +3724,54 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_skill_description(md_path: Path, use_pyyaml: bool = True) -> str:
+    try:
+        txt = md_path.read_text(encoding="utf-8")
+        if txt.startswith("---"):
+            fm = txt.split("---", 2)[1]
+            if use_pyyaml:
+                try:
+                    import yaml
+
+                    data = yaml.safe_load(fm)
+                    if isinstance(data, dict) and "description" in data and data["description"] is not None:
+                        s_lines = [ln.strip() for ln in str(data["description"]).strip().splitlines() if ln.strip()]
+                        return s_lines[0] if s_lines else ""
+                except Exception:
+                    pass
+            lines = fm.splitlines()
+            for idx, line in enumerate(lines):
+                if line.startswith("description:"):
+                    raw_val = line[len("description:") :].strip()
+                    m_block = re.match(r"^([>|])(?:[-+0-9]*)?(?:\s+#.*)?$", raw_val)
+                    if m_block:
+                        style = m_block.group(1)
+                        cont: list[str] = []
+                        base_indent: int | None = None
+                        for nxt in lines[idx + 1 :]:
+                            if not nxt.strip():
+                                continue
+                            indent = len(nxt) - len(nxt.lstrip(" \t"))
+                            if indent == 0:
+                                break
+                            if base_indent is None:
+                                base_indent = indent
+                            elif indent < base_indent:
+                                break
+                            cont.append(nxt.strip())
+                        if not cont:
+                            return ""
+                        if style == "|":
+                            return cont[0]
+                        return " ".join(cont)
+                    if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+                        return raw_val[1:-1]
+                    return re.sub(r"\s+#.*$", "", raw_val).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def cmd_skills(args) -> None:
     skills_root = Path.home() / ".gemini" / "config" / "skills"
     plugins_root = Path.home() / ".gemini" / "config" / "plugins"
@@ -3768,34 +3816,7 @@ def cmd_skills(args) -> None:
             return
 
     def _parse_desc(md_path: Path) -> str:
-        try:
-            txt = md_path.read_text(encoding="utf-8")
-            if txt.startswith("---"):
-                fm = txt.split("---", 2)[1]
-                try:
-                    import yaml
-
-                    data = yaml.safe_load(fm)
-                    if isinstance(data, dict) and "description" in data:
-                        return str(data["description"]).strip().splitlines()[0]
-                except Exception:
-                    pass
-                lines = fm.splitlines()
-                for idx, line in enumerate(lines):
-                    if line.startswith("description:"):
-                        val = line[len("description:") :].strip().strip('"').strip("'")
-                        if val in (">-", ">", "|", "|-"):
-                            cont = []
-                            for nxt in lines[idx + 1 :]:
-                                if nxt.startswith((" ", "\t")):
-                                    cont.append(nxt.strip())
-                                else:
-                                    break
-                            return " ".join(cont)
-                        return val
-        except Exception:
-            pass
-        return ""
+        return _parse_skill_description(md_path)
 
     standalone_skills = []
     total_ref_modules = 0

@@ -2075,3 +2075,20 @@ def test_creative_mode_resumption_packet_f15(tmp_path: Path, capsys: pytest.Capt
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "math"
     assert "paper2-hierarchical-edge-cloud" in payload["packets"]["math"]["body"]
+
+    # Verify _parse_skill_description parity between PyYAML and stdlib fallback across block/quoted scalars
+    from sovereign_kb.cli import GWI_LENS_SKILL_ROUTING, _parse_skill_description
+
+    assert "personal-kb" in GWI_LENS_SKILL_ROUTING["principal-verification"]
+    assert "personal-codex" not in GWI_LENS_SKILL_ROUTING["principal-verification"]
+    cases = [
+        ('---\nname: s1\ndescription: "|"\n---\n', "|"),
+        ("---\nname: s2\ndescription: >- # summary\n\n  alpha\n  beta\n---\n", "alpha beta"),
+        ("---\nname: s3\ndescription: >+\n  gamma\n  delta\n---\n", "gamma delta"),
+        ("---\nname: s4\ndescription: |\n  first line\n  second line\n---\n", "first line"),
+    ]
+    for idx, (raw_md, expected) in enumerate(cases):
+        p_md = tmp_path / f"skill_{idx}.md"
+        p_md.write_text(raw_md, encoding="utf-8")
+        assert _parse_skill_description(p_md, use_pyyaml=False) == expected
+        assert _parse_skill_description(p_md, use_pyyaml=True) == expected
