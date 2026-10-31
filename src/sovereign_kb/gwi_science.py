@@ -389,8 +389,14 @@ def _pytest_collect(root: Path, timeout: int = 180) -> tuple[int | None, str]:
     if m and res.returncode == 0:
         return int(m.group(1)), f"`pytest --collect-only -q` via {via}: {m.group(1)} collected"
     if res.returncode == 0:
-        n = sum(1 for ln in (res.stdout or "").splitlines() if "::" in ln)
-        return n, f"`pytest --collect-only -q` via {via}: {n} node id(s)"
+        total = 0
+        for ln in (res.stdout or "").splitlines():
+            m_cnt = re.search(r":\s*(\d+)$", ln.strip())
+            if m_cnt:
+                total += int(m_cnt.group(1))
+            elif "::" in ln:
+                total += 1
+        return total, f"`pytest --collect-only -q` via {via}: {total} collected"
     tail = " ".join(out.strip().splitlines()[-2:])[:200]
     return None, f"collection errored (exit {res.returncode}): {tail}"
 
