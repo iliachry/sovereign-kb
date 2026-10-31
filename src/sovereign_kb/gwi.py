@@ -64,6 +64,7 @@ from sovereign_kb.gwi_core import (
     compute_subtractive_penalty,
     psi_barrier,
 )
+from sovereign_kb.gwi_science import SCI_LENS_ID, audit_science_integrity
 
 __all__ = [
     "CANONICAL_GITLAB_GROUPS",
@@ -2579,6 +2580,55 @@ CRAFT_LENSES: dict[str, dict[str, Any]] = {
             "Every path, command, and number written into `README.md` must be verified against the code/tool output before commit; `readme_check.py` blocks pushes with dead paths, phantom commands, undocumented new surface, or wrong test counts.",
         ],
     },
+    SCI_LENS_ID: {
+        "id": SCI_LENS_ID,
+        "title": "Lens C5 (L9): Science Integrity, Measurement Provenance & Security Soundness Gate",
+        "pole": "chrysos",
+        "skills_count": 4,
+        "vault_note": "02-operating-system/lenses/science-integrity.md",
+        "applies_to_profiles": ["app", "sim", "video", "paper"],
+        "trigger_deps": [],
+        "trigger_suffixes": [],
+        "contact_sheet": "GWI-SCI Findings Ledger (claim -> generator script -> acquisition call / raw trace; collected test count)",
+        "probes": [
+            {
+                "id": "GWI-SCI-01",
+                "metric": "Measurement provenance: 'measured/telemetry/benchmarked on <hardware>' backed by acquisition code or raw traces",
+                "target": "0 un-hedged hardware claims generated from literal constants",
+                "veto": "Paper/README calls hardcoded numbers measured telemetry (no subprocess/timer/trace read, no raw trace)",
+            },
+            {
+                "id": "GWI-SCI-02",
+                "metric": "Collected test count when tests are configured or claimed (`pytest --collect-only -q` under --strict-lenses)",
+                "target": ">= 1 collected test",
+                "veto": "Test config / README test claim with 0 collected tests",
+            },
+            {
+                "id": "GWI-SCI-03",
+                "metric": "Quality gate executes a real test runner (not only `test -f` existence checks)",
+                "target": "gate invokes pytest / cargo test / vitest / npm test / godot -s",
+                "veto": "Hollow gate in app/sim profile or in a repo that declares a test framework",
+            },
+            {
+                "id": "GWI-SCI-04",
+                "metric": "Seed/fixture content attributed to real model ids carries a provenance marker or a real model call",
+                "target": "0 unmarked model-attributed seed files",
+                "veto": "Hardcoded 'reviews' signed as claude-*/gpt-*/qwen*/gemini-* with no model call and no `synthetic_demo` marker",
+            },
+            {
+                "id": "GWI-SCI-05",
+                "metric": "Web soundness: no interpolated inline event handlers; signatures bound to registered keys",
+                "target": "0 interpolated on*= handlers; key-registry lookup before verify",
+                "veto": "onclick=\"f('${x}')\" style interpolation in shipped HTML/JS (05A); caller-supplied pubkey verify is WARN (05B)",
+            },
+        ],
+        "builder_constraints": [
+            "Label every number that was not acquired on hardware as simulated / illustrative / assumed in the same paragraph, or commit the raw traces and the acquisition script (`nvidia-smi`, `powermetrics`, `perf`, timers).",
+            "A quality gate must execute the test suite; `test -f results.json` is not verification. Keep >= 1 collected test whenever tests are configured or claimed.",
+            "Seeded demo content attributed to real models must carry `provenance: synthetic_demo` (or be produced by an actual model call).",
+            "Never build inline `on*=` handlers from template strings; use `addEventListener` + `data-*`. Bind agent_id -> pubkey in a registry before verifying signatures.",
+        ],
+    },
 }
 
 
@@ -2690,6 +2740,12 @@ def detect_active_lenses(target: Path, profile: str = "auto") -> list[dict[str, 
                 (root / "AGENTS.md").is_file() or pkg_json.is_file() or pyproject_toml.is_file() or cargo_toml.is_file()
             ):
                 matched_reasons.append(f"profile={chosen_profile}")
+            elif (
+                lens_id == SCI_LENS_ID
+                and root.is_dir()
+                and not (resolved.is_file() and resolved.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv"))
+            ):
+                matched_reasons.append(f"integrity=always(profile={chosen_profile})")
 
         dep_hits = sorted(pkg_deps.intersection(spec["trigger_deps"]))
         if dep_hits and (chosen_profile != "paper" or "paper" in spec["applies_to_profiles"]):
@@ -3648,6 +3704,7 @@ def evaluate_craft_lenses(
     base_chrysos = round((float(tiers.get("S_sub", 9.0)) + float(tiers.get("S_exist", 9.0))) / 2.0, 2)
     base_verga = round((float(tiers.get("S_perc", 9.0)) + float(tiers.get("S_act", 9.0))) / 2.0, 2)
     collected_subtractive_metrics: dict[str, Any] = {}
+    sci_audit: dict[str, Any] | None = None
 
     lens_results: list[dict[str, Any]] = []
     for spec in active_specs:
@@ -5318,6 +5375,24 @@ def evaluate_craft_lenses(
                     }
                 )
 
+        elif lid == SCI_LENS_ID:
+            sci_audit = audit_science_integrity(
+                root, profile=report.get("profile", "app"), run_collect=bool(strict_lenses)
+            )
+            for f in sci_audit["findings"]:
+                evidence = "; ".join(f["evidence"][:3])
+                if f["blocker"]:
+                    score = min(score, 6.5)
+                    veto_triggered = True
+                    probe_findings.append(f"VETO [{f['id']}] ({f['severity']}): {f['title']} — {evidence}")
+                else:
+                    score = max(0.0, score - 0.4)
+                    probe_findings.append(f"WARN [{f['id']}] ({f['severity']}): {f['title']} — {evidence}")
+                probe_measurements.append(
+                    {"id": f["id"], "value": f["evidence"], "target": "0 findings", "status": f["status"]}
+                )
+            probe_findings.extend(sci_audit["passes"])
+
         if strict_lenses and unmeasured_count > 0 and not veto_triggered:
             score = min(score, VERGA_UNMEASURED_CAP)
 
@@ -5379,6 +5454,7 @@ def evaluate_craft_lenses(
         "chrysos_veto_triggered": chrysos_veto,
         "lenses": lens_results,
         "inactive_lenses": inactive_lenses,
+        "science_integrity": sci_audit,
     }
 
 
@@ -5403,6 +5479,16 @@ def evaluate_target(
         report = evaluate_app_profile(resolved, theta=theta, k=k)
 
     cl = evaluate_craft_lenses(resolved, report, strict_lenses=strict_lenses)
+    # Surface GWI-SCI-* findings as first-class report blockers (P0/P1 with blocker=True veto via the lens above).
+    for f in (cl.get("science_integrity") or {}).get("findings") or []:
+        report.setdefault("blockers", []).append(
+            {
+                "id": f["id"],
+                "severity": f["severity"],
+                "dimension": "Science Integrity (Measurement Provenance, Test Reality & Security Soundness)",
+                "message": f"{'VETO' if f['blocker'] else 'WARN'}: {f['title']} — " + "; ".join(f["evidence"][:3]),
+            }
+        )
     verga_unmeasured = any(
         lr.get("unmeasured_probes", 0) > 0 for lr in cl.get("lenses", []) if lr.get("pole") == "verga"
     )
