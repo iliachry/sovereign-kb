@@ -2092,3 +2092,250 @@ def test_creative_mode_resumption_packet_f15(tmp_path: Path, capsys: pytest.Capt
         p_md.write_text(raw_md, encoding="utf-8")
         assert _parse_skill_description(p_md, use_pyyaml=False) == expected
         assert _parse_skill_description(p_md, use_pyyaml=True) == expected
+
+
+def test_human_wedge_anti_palantir_gate(tmp_path: Path) -> None:
+    """
+    Verify GWI-APP-W01 and Probe 7 (`ux.wedge_anti_palantir` — 'We Are Not Palantir'):
+      1. A Palantir-style wedge (`snap.html` / `marketplace.html`) with a 2-column `1120px` split grid,
+         un-gated diagnosis/chat panels on first paint, and leaked B2B jargon (`Smart Pool`, `#PV-BOOK-`,
+         `SLA < 90`, `HACCP`, `Ζωντανή Ροή`, `95% AI`) triggers P0 blocker `GWI-APP-W01` and `VETO [ux.wedge_anti_palantir]`.
+      2. A clean, single-column (`max-width: 540px`), progressively disclosed (`display: none` until photo action)
+         consumer wedge free of B2B telemetry jargon passes `ux.wedge_anti_palantir` and achieves G >= 9.0.
+    """
+    from sovereign_kb.gwi import _audit_human_wedge_anti_palantir, evaluate_target
+
+    bad_dir = tmp_path / "palantir-wedge-app"
+    (bad_dir / "public").mkdir(parents=True)
+    (bad_dir / "tests").mkdir(parents=True)
+    (bad_dir / "AGENTS.md").write_text(
+        "# App\n- FEAT-01\n- FEAT-02\n- FEAT-03\n- FEAT-04\n- FEAT-05\n", encoding="utf-8"
+    )
+    (bad_dir / "README.md").write_text(
+        "# App\n\nSingle-verb wedge app verified by `tests/test_app.py` (`public/snap.html`, `public/marketplace.html`).\n",
+        encoding="utf-8",
+    )
+    (bad_dir / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntestpaths = ['tests']\n", encoding="utf-8")
+    (bad_dir / "tests" / "test_app.py").write_text(
+        "# FEAT-01 FEAT-02 FEAT-03 FEAT-04 FEAT-05\ndef test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (bad_dir / "public" / "snap.html").write_text(
+        "<!DOCTYPE html><html><head><style>"
+        ".container { max-width: 1120px; } .main-grid { display: grid; grid-template-columns: 1fr 1fr; }"
+        "</style></head><body>"
+        "<nav><a href='/snap'>Snap</a><a href='/marketplace'>Marketplace</a><span>Smart Pool: 0</span></nav>"
+        "<div id='diag'>HACCP 95% AI #PV-BOOK-101 SLA < 90</div>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    (bad_dir / "public" / "marketplace.html").write_text(
+        "<!DOCTYPE html><html><head><style>"
+        ".layout { max-width: 1180px; grid-template-columns: 1.25fr 1fr; }"
+        "</style></head><body>"
+        "<aside>Ζωντανή Ροή προς το PestView Smart Pool #PV-MKT-99</aside>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+
+    w_bad = _audit_human_wedge_anti_palantir(
+        bad_dir, [bad_dir / "public" / "snap.html", bad_dir / "public" / "marketplace.html"]
+    )
+    assert w_bad["passed"] is False
+    assert any("[W1-Width]" in v for v in w_bad["violations"])
+    assert any("[W1-SplitGrid]" in v for v in w_bad["violations"])
+    assert any("[W2-JargonLeak]" in v for v in w_bad["violations"])
+    assert any("[W3-ProgressiveDisclosure]" in v for v in w_bad["violations"])
+
+    rep_bad = evaluate_target(bad_dir, profile="app")
+    assert rep_bad["calculation"]["status"] == "FAIL"
+    assert any(b["id"] == "GWI-APP-W01" for b in rep_bad["blockers"])
+    assert rep_bad["craft_lenses"]["verga_veto_triggered"] is True
+    ux_bad = next(ln for ln in rep_bad["craft_lenses"]["lenses"] if ln["id"] == "ux-ergonomics")
+    assert any("VETO [ux.wedge_anti_palantir]" in pf for pf in ux_bad["probe_findings"])
+
+    # Clean single-column progressive consumer wedge (including @media(max-width:768px)) -> PASS
+    (bad_dir / "public" / "snap.html").write_text(
+        "<!DOCTYPE html><html lang='el'><head><style>"
+        ":root { --bg: #faf8f5; --fg: #1c1917; color-scheme: light; }"
+        ".wedge-main { max-width: 540px; margin: 0 auto; }"
+        ".wedge-result { display: none; }"
+        "@media (max-width: 768px) { .wedge-main { padding: 0 12px; } }"
+        "@media (prefers-reduced-motion: reduce) {}"
+        "</style></head><body>"
+        "<header><a href='/snap'>PestView Snap</a><a href='/marketplace'>Επαγγελματίες</a></header>"
+        "<main class='wedge-main' aria-label='PestView Snap'>"
+        "<button type='button'>Βγάλε Φωτογραφία</button>"
+        "<section id='snap-result' class='wedge-result'><canvas id='snap-canvas'></canvas><div id='snap-chat'>Συμβουλή AI</div></section>"
+        "</main></body></html>",
+        encoding="utf-8",
+    )
+    (bad_dir / "public" / "marketplace.html").write_text(
+        "<!DOCTYPE html><html lang='el'><head><style>"
+        ":root { --bg: #faf8f5; --fg: #1c1917; color-scheme: light; }"
+        ".wedge-main { max-width: 540px; margin: 0 auto; }"
+        "@media (prefers-reduced-motion: reduce) {}"
+        "</style></head><body>"
+        "<main class='wedge-main' aria-label='Επαγγελματίες Απεντόμωσης'>"
+        "<button type='button'>Κλήση Τώρα</button>"
+        "</main></body></html>",
+        encoding="utf-8",
+    )
+    w_good = _audit_human_wedge_anti_palantir(
+        bad_dir, [bad_dir / "public" / "snap.html", bad_dir / "public" / "marketplace.html"]
+    )
+    assert w_good["passed"] is True
+    assert w_good["violations"] == []
+
+    rep_good = evaluate_target(bad_dir, profile="app")
+    assert rep_good["calculation"]["status"] == "PASS"
+    assert not any(b["id"] == "GWI-APP-W01" for b in rep_good["blockers"])
+    ux_good = next(ln for ln in rep_good["craft_lenses"]["lenses"] if ln["id"] == "ux-ergonomics")
+    assert any("PASS [ux.wedge_anti_palantir]" in pf for pf in ux_good["probe_findings"])
+
+    # Adversarial cases from GPT-6 Astra review:
+    # 1. Unused `.wedge-result { display: none }` with <canvas> outside it, 70rem width, flex split, HTML entities & script jargon, 4 nav links
+    adv_snap = bad_dir / "public" / "snap.html"
+    adv_snap.write_text(
+        "<!DOCTYPE html><html><head><style>"
+        ".wrap { max-width: 70rem; } .col { flex: 1 1 360px; } .wedge-result { display: none; }"
+        "</style></head><body>"
+        "<nav><a href='/1'>1</a><a href='/2'>2</a><a href='/3'>3</a><a href='/4'>4</a></nav>"
+        "<canvas id='snap-canvas'></canvas>"
+        "<p>SLA &lt; 90 &amp; Smart&nbsp;Pool</p>"
+        "<script>const leak = 'HACCP #PV-BOOK-123';</script>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    w_adv = _audit_human_wedge_anti_palantir(bad_dir, [adv_snap])
+    assert w_adv["passed"] is False
+    assert any("[W1-Width]" in v for v in w_adv["violations"])
+    assert any("[W1-SplitGrid]" in v for v in w_adv["violations"])
+    assert any("[W2-JargonLeak]" in v for v in w_adv["violations"])
+    assert any("[W3-ProgressiveDisclosure]" in v for v in w_adv["violations"])
+    assert any("[W4-PortalNav]" in v for v in w_adv["violations"])
+
+    # 2. App Router `app/snap/page.tsx` with `{result && (` is discovered and passes, while `src/components/Card.tsx` is ignored
+    app_snap = bad_dir / "app" / "snap" / "page.tsx"
+    app_snap.parent.mkdir(parents=True, exist_ok=True)
+    app_snap.write_text(
+        "export default function SnapPage() { return (<main style={{ maxWidth: '540px' }}>"
+        "{result && (<section id='snap-ai-marketplace-panel'><canvas id='snap-preview-canvas' /></section>)}"
+        "</main>); }",
+        encoding="utf-8",
+    )
+    comp_card = bad_dir / "src" / "components" / "Card.tsx"
+    comp_card.parent.mkdir(parents=True, exist_ok=True)
+    comp_card.write_text(
+        "export function Card() { return <div style={{ maxWidth: '1200px' }}>Reusable Card</div>; }",
+        encoding="utf-8",
+    )
+    w_routes = _audit_human_wedge_anti_palantir(bad_dir, [app_snap, comp_card])
+    assert w_routes["wedge_files_count"] == 1
+    assert w_routes["passed"] is True
+
+
+def test_sovereign_audit_registry_subprojects_and_incremental_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """
+    Verify Sovereign Audit Provenance & Subproject Incremental Cache (`audit_registry.py` & `gwi.py`):
+      1. `discover_subprojects` discovers root `paper` (`main.tex`), child `video/` (`app`), and `showcase.mp4` (`video`)
+         while ignoring `<20MB` companion `showcase_compressed.mp4`.
+      2. `compute_subproject_fingerprint` isolates scoped Git trees so dirtying `video/` does NOT invalidate `.` (`paper`).
+      3. `record_gwi_audit` and `record_triad_audit` persist model IDs (`kb-gwi`, `claude-fable-5-1`, `gpt-6-astra`)
+         and stack versions (`kb_version`, `gwi_version`, `swm_version`).
+      4. `gwi audit --subprojects --incremental --json` hits the cache (`cache_hit: True`) on `FRESH` passing subprojects
+         while re-auditing `DIRTY` or `FAILED` sibling subprojects (`cache_hit: False`).
+    """
+    import sovereign_kb.audit_registry as ar_mod
+    from sovereign_kb.audit_registry import (
+        compute_subproject_fingerprint,
+        discover_subprojects,
+        evaluate_subproject_freshness,
+        get_sovereign_versions,
+        record_triad_audit,
+    )
+    from sovereign_kb.gwi import main_cli
+
+    custom_reg = tmp_path / "test_audit_registry.json"
+    monkeypatch.setattr(ar_mod, "AUDIT_REGISTRY_PATH", custom_reg)
+
+    versions = get_sovereign_versions()
+    assert "kb_version" in versions and "gwi_version" in versions and "swm_version" in versions
+
+    repo = tmp_path / "multi-deliverable-repo"
+    repo.mkdir()
+    (repo / "main.tex").write_text(
+        "\\documentclass{article}\n\\usepackage{microtype}\n\\usepackage{booktabs}\n\\begin{document}\n"
+        + "\\section{Introduction}\n"
+        + ("Deterministic verification of multi-deliverable subprojects \\cite{knuth1984}.\n" * 60)
+        + "\\begin{equation}\n\\mathcal{G}(\\mathbf{S}) = \\sum w_i S_i \\Psi(S_i)\n\\end{equation}\n"
+        + "\\begin{thebibliography}{9}\n\\bibitem{knuth1984} D. E. Knuth, 1984, \\url{https://doi.org/10.1093/comjnl/27.2.97}.\n\\end{thebibliography}\n"
+        + "\\end{document}\n",
+        encoding="utf-8",
+    )
+    (repo / "main.pdf").write_bytes(b"%PDF-1.5\n" + b"0" * 24000)
+    (repo / "main.log").write_text("Output written on main.pdf (4 pages, 24000 bytes).\n", encoding="utf-8")
+
+    vid_sub = repo / "video"
+    vid_sub.mkdir()
+    (vid_sub / "package.json").write_text(json.dumps({"name": "cinema-engine", "version": "1.0.0"}), encoding="utf-8")
+    (vid_sub / "index.js").write_text("export const x = Math.random();\n", encoding="utf-8")
+
+    (repo / "showcase.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42moov" + b"\x00" * 1024)
+    (repo / "showcase_compressed.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42moov" + b"\x00" * 512)
+
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True, capture_output=True
+    )
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init multi-deliverable repo"], check=True, capture_output=True
+    )
+
+    subs = discover_subprojects(repo)
+    subpaths = [s["subpath"] for s in subs]
+    assert subpaths == [".", "video", "showcase.mp4"]
+
+    # Audit all subprojects initially
+    main_cli(["audit", str(repo), "--subprojects", "--json"])
+    first_run = json.loads(capsys.readouterr().out)
+    assert len(first_run["subprojects"]) == 3
+    assert all(sp["cache_hit"] is False for sp in first_run["subprojects"])
+    root_res = next(sp for sp in first_run["subprojects"] if sp["subpath"] == ".")
+    assert root_res["report"]["calculation"]["status"] == "PASS"
+
+    # Record Triad audit for root paper
+    record_triad_audit(repo, subpath=".", disposition="APPROVED", notes="Unit test triad approval")
+    fresh_root = evaluate_subproject_freshness(repo, ".")
+    assert fresh_root["freshness"] == "FRESH"
+    assert fresh_root["is_fresh_pass"] is True
+    assert fresh_root["triad_ever_audited"] is True
+    assert fresh_root["triad_disposition"] == "APPROVED"
+    assert any("claude-fable-5-1" in m for m in fresh_root["models"])
+    assert any("gpt-6-astra" in m for m in fresh_root["models"])
+
+    # Modify `video/index.js`: `video` becomes DIRTY, but `.` (`paper`) MUST remain FRESH!
+    (vid_sub / "index.js").write_text("export const x = 42;\n", encoding="utf-8")
+    fp_root_after = compute_subproject_fingerprint(repo, ".", sibling_subpaths=subpaths)
+    fp_vid_after = compute_subproject_fingerprint(repo, "video", sibling_subpaths=subpaths)
+    assert fp_root_after["dirty"] is False
+    assert fp_vid_after["dirty"] is True
+
+    # Run incremental subproject audit: root `.` hits cache (`cache_hit: True`), `video` and `showcase.mp4` re-audit
+    main_cli(["audit", str(repo), "--subprojects", "--incremental", "--json"])
+    inc_run = json.loads(capsys.readouterr().out)
+    inc_by_sub = {sp["subpath"]: sp for sp in inc_run["subprojects"]}
+    assert inc_by_sub["."]["cache_hit"] is True
+    assert inc_by_sub["video"]["cache_hit"] is False
+    assert inc_by_sub["showcase.mp4"]["cache_hit"] is False
+
+    # Verify `gwi status` and `gwi subprojects` JSON output
+    main_cli(["status", str(repo), "--json"])
+    st_out = json.loads(capsys.readouterr().out)
+    assert len(st_out["targets"]) == 3
+    main_cli(["subprojects", str(repo), "--json"])
+    sp_out = json.loads(capsys.readouterr().out)
+    assert len(sp_out["subprojects"]) == 3

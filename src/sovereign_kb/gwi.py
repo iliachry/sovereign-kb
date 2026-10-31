@@ -513,6 +513,32 @@ def evaluate_app_profile(
             f"grids={reg_audit['distinct_grid_templates']} (R_kanon={reg_audit['r_kanon']})."
         )
 
+    wedge_audit = _audit_human_wedge_anti_palantir(root, ui_files)
+    if wedge_audit["wedge_files_count"] > 0:
+        if not wedge_audit["passed"]:
+            score_u = min(score_u, 6.6)
+            score_v = min(score_v, 6.6)
+            probe_states["U"] = "FAIL"
+            blockers.append(
+                {
+                    "id": "GWI-APP-W01",
+                    "severity": "P0",
+                    "dimension": "U / V (Law L6 & L9 — 'We Are Not Palantir' Human-Data Wedge Gate)",
+                    "message": (
+                        "Human-Data Wedge Anti-Palantir violation ("
+                        + "; ".join(wedge_audit["violations"][:5])
+                        + "). Consumer wedges (/snap, /moment, /card, /marketplace) must be single-column "
+                        "(max-width <= 680px, 0 split grids/sidebars), progressively disclosed (Step 2/3 hidden until Step 1 action), "
+                        "and 100% free of internal B2B ERP/telemetry jargon ('Smart Pool', '#PV-BOOK-', 'SLA <', 'HACCP', 'Ζωντανή Ροή')."
+                    ),
+                }
+            )
+        else:
+            notes.append(
+                f"Law L6 & L9 ('We Are Not Palantir' Wedge Gate) verified across {wedge_audit['wedge_files_count']} "
+                "consumer wedge surface(s): single-column <=680px, progressive disclosure, 0 B2B telemetry leaks."
+            )
+
     # 5. Performance & Bundle Hygiene (P) — Measure source & bundle footprint
     oversized_bundles: list[str] = []
     for sp in src_files:
@@ -2270,10 +2296,17 @@ CRAFT_LENSES: dict[str, dict[str, Any]] = {
                 "target": "0 orphaned inputs, tabular-nums on tables, 0 w-screen overflow",
                 "veto": "Orphaned <input> with placeholder only or unlabelled icon-only button",
             },
+            {
+                "id": "ux.wedge_anti_palantir",
+                "metric": "Law L6 & L9 'We Are Not Palantir' Human-Data Wedge Gate (/snap, /moment, /card, /marketplace)",
+                "target": "Single-column <=680px, progressive disclosure (Step 2/3 hidden until action), 0 B2B telemetry leaks",
+                "veto": "Multi-column dashboard grid, un-gated first-paint steps, or leaked B2B jargon ('Smart Pool', '#PV-BOOK-', 'SLA <', 'HACCP', 'Ζωντανή Ροή')",
+            },
         ],
         "builder_constraints": [
             "Law L0 (Inherit Before You Invent): Inspect sibling repositories first and inherit their exact Light/Dark polarity, brand hex palette, and institutional footer (never default to dark neon-cyberpunk).",
             "Law L1-L3 (Subtractive Budget): Keep top bar to 1 row (<=7 items, 0 nested badges), default answers <=2 bullets, <=1 expanded analytical table visible at once, and inline citation pills.",
+            "Law L6 & L9 ('We Are Not Palantir' Wedge Gate): Consumer wedges (/snap, /moment, /card, /marketplace) must be single-column (<=680px), progressively disclosed (Step 2/3 hidden until Step 1 action), and 100% free of B2B operator telemetry ('Smart Pool', '#PV-BOOK-', 'SLA <', 'HACCP', 'Ζωντανή Ροή').",
             "Law L8 (Simultaneous Cognitive Load): Keep default first paint <=24 interactive controls, <=4 choice groups, <=3 macro-regions, and never default to a split 2D+3D view mode.",
             "Keep 2D HUD overlays collapsible/translucent and <= 25% of 3D canvas area.",
             "Enforce 1 unambiguous primary CTA per view and >= 44x44px touch/pointer targets.",
@@ -3203,19 +3236,49 @@ def _audit_simultaneous_load_l8(
         for p in re.split(r"<!DOCTYPE\s+html>|/\* === GWI_FILE_BOUNDARY === \*/", ui_text, flags=re.IGNORECASE)
         if p.strip() and re.search(r"<(?:button|select|input|main|header|section|div)\b", p, flags=re.IGNORECASE)
     ]
-    single_page_sample = html_pages[0] if html_pages else ui_text
+    pages_to_scan = html_pages if html_pages else [ui_text]
+
+    def _strip_hidden_and_dialogs(page_src: str) -> str:
+        # Exclude controls inside <dialog>...</dialog> or sections marked display:none / hidden on first paint
+        cleaned = re.sub(r"<dialog\b[^>]*>[\s\S]*?</dialog>", "", page_src, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"<(?:section|div)\b[^>]*(?:display\s*:\s*none|\bhidden\b)[^>]*>[\s\S]*?</(?:section|div)>",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        return cleaned
+
+    first_paint_pages = [_strip_hidden_and_dialogs(p) for p in pages_to_scan]
+    max_static_ctrl = max(
+        (len(re.findall(r"<(?:button|select|input)\b", fp, flags=re.IGNORECASE)) for fp in first_paint_pages),
+        default=0,
+    )
+    max_static_groups = max(
+        (len(re.findall(r'role\s*=\s*["\']group["\']|<select\b', fp, flags=re.IGNORECASE)) for fp in first_paint_pages),
+        default=0,
+    )
+    wedge_first_paint_pages = [
+        fp
+        for fp in first_paint_pages
+        if re.search(r"<title>[^<]*(?:Snap|Moment|Quick Card|Marketplace)", fp, flags=re.IGNORECASE)
+    ]
+    max_wedge_ctrl = max(
+        (len(re.findall(r"<(?:button|select|input)\b", fp, flags=re.IGNORECASE)) for fp in wedge_first_paint_pages),
+        default=0,
+    )
 
     raw_ctrl = pw.get("visibleInteractiveControls")
     if raw_ctrl is None:
         raw_ctrl = pw.get("interactiveControlCount")
     if raw_ctrl is None:
-        n_ctrl = len(re.findall(r"<(?:button|select|input)\b", single_page_sample, flags=re.IGNORECASE))
+        n_ctrl = max_static_ctrl
     else:
-        n_ctrl = int(raw_ctrl)
+        n_ctrl = max(int(raw_ctrl), max_wedge_ctrl) if max_wedge_ctrl > 16 else int(raw_ctrl)
 
     raw_groups = pw.get("visibleChoiceGroups")
     if raw_groups is None:
-        n_groups = len(re.findall(r'role\s*=\s*["\']group["\']|<select\b', single_page_sample, flags=re.IGNORECASE))
+        n_groups = max_static_groups
     else:
         n_groups = int(raw_groups)
 
@@ -3316,6 +3379,210 @@ def _audit_canonical_anchor_l9(root: Path, src_corpus: str = "") -> dict[str, An
     res["gitlab_groups"] = sorted(set(gl_groups)) if non_canonical_groups else (["canonical"] if gl_groups else [])
     res["non_canonical_groups"] = non_canonical_groups
     return res
+
+
+_WEDGE_STEMS: frozenset[str] = frozenset({"snap", "moment", "card", "marketplace"})
+
+_WEDGE_B2B_JARGON_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("Smart Pool", re.compile(r"\bSmart\s+Pool\b", re.IGNORECASE)),
+    ("#PV-BOOK/#PV-MKT ticket hash", re.compile(r"#PV-(?:BOOK|MKT|INC)-[A-Za-z0-9_-]+")),
+    ("SLA < operator metric", re.compile(r"\bSLA\s*<\s*\d+", re.IGNORECASE)),
+    ("HACCP B2B compliance tag", re.compile(r"\bHACCP\b")),
+    ("Live Operator Feed ('Ζωντανή Ροή' / 'Live Feed')", re.compile(r"Ζωντανή\s+Ροή|\bLive\s+Feed\b", re.IGNORECASE)),
+    ("Raw AI confidence telemetry ('% AI' / 'TRAP #')", re.compile(r"\b\d+%\s*AI\b|\bTRAP\s*#\d+\b")),
+)
+
+
+def _is_wedge_route_file(p: Path, root: Path) -> str | None:
+    """Return the canonical wedge stem ('snap', 'moment', 'card', 'marketplace') if `p` is a consumer wedge route."""
+    if p.suffix.lower() not in (".html", ".tsx", ".jsx", ".vue", ".svelte"):
+        return None
+    stem = p.stem.lower()
+    parent_name = p.parent.name.lower()
+    if stem in ("page", "index", "+page") and parent_name in _WEDGE_STEMS:
+        return parent_name
+    if stem in _WEDGE_STEMS:
+        rel_parts = [pt.lower() for pt in (p.relative_to(root).parts if p.is_relative_to(root) else p.parts)]
+        if any(comp_dir in rel_parts for comp_dir in ("components", "ui", "atoms", "molecules", "widgets")):
+            return None
+        return stem
+    return None
+
+
+def _audit_human_wedge_anti_palantir(root: Path, ui_files: list[Path]) -> dict[str, Any]:
+    """
+    Law L6, L8 & L9 — Human-Data Wedge Single-Verb & Anti-Palantir Gate ('We Are Not Palantir', PDR-2026-10-16 §6.1).
+    Audits consumer wedge surfaces (`snap.*`, `moment.*`, `card.*`, `marketplace.*`) across 4 strict invariants:
+      - W1 (Single-Column Container <= 680px & 0 Multi-Column Split Dashboards):
+        No `max-width > 680px` (`1120px`, `70rem`, `max-w-6xl`, etc., ignoring `@media` conditions),
+        no multi-column page grids (`1fr 1fr`, `1.25fr 1fr`, `lg:grid-cols-12`, `md:grid-cols-2`),
+        no wide flex split columns (`flex: 1 1 320px+`), and no `<aside>` operator sidebars.
+      - W2 (Zero B2B Operator / ERP Telemetry Jargon Leak in Consumer Markup & Scripts):
+        HTML-unescaped markup and script string literals must not expose internal control-plane terms
+        (`Smart Pool`, `#PV-BOOK-`, `#PV-MKT-`, `SLA <`, `HACCP`, `Ζωντανή Ροή`, `% AI` confidence badges).
+      - W3 (Progressive Disclosure on Interactive Diagnostic Wedges — Law L6):
+        On `snap` routes, Step 2/3 (AI diagnosis, chat, and local pros) must be gated inside an element
+        that is actually hidden on first paint (`hidden`, inline `display: none`, a matched CSS class with
+        `display: none`, or conditional JSX `{result &&` / `{hasPhoto &&`) wrapping the post-photo content.
+      - W4 (Single-Row Header Simplicity — Law L1):
+        Wedge `<header>` / `<nav>` bars must have <= 2 interactive links/buttons (brand + 1 action pill).
+    """
+    import html as _html
+
+    wedge_entries: list[tuple[Path, str]] = []
+    for p in ui_files:
+        w_kind = _is_wedge_route_file(p, root)
+        if w_kind:
+            wedge_entries.append((p, w_kind))
+
+    violations: list[str] = []
+    file_reports: list[dict[str, Any]] = []
+
+    for wf, wedge_kind in wedge_entries:
+        rel_name = str(wf.relative_to(root)) if wf.is_relative_to(root) else wf.name
+        raw = wf.read_text(encoding="utf-8", errors="ignore")
+        wf_violations: list[str] = []
+
+        # Extract CSS/style blocks + inline HTML/JSX style attributes for W1 layout inspection
+        style_blocks = "\n".join(re.findall(r"<style\b[^>]*>([\s\S]*?)</style>", raw, flags=re.IGNORECASE))
+        for href in re.findall(r'<link\b[^>]*href=["\']/?([^"\']+\.css)["\']', raw, flags=re.IGNORECASE):
+            css_name = Path(href).name.lower()
+            if css_name not in ("sovereign.css", "tokens.css", "globals.css", "tailwind.css"):
+                for cand in (wf.parent / href, root / "public" / href, root / href):
+                    if cand.is_file():
+                        style_blocks += "\n" + cand.read_text(encoding="utf-8", errors="ignore")
+                        break
+
+        inline_styles = "\n".join(re.findall(r'\bstyle\s*=\s*["\']([^"\']+)["\']', raw, flags=re.IGNORECASE))
+        jsx_styles = "\n".join(re.findall(r"\bstyle\s*=\s*\{\{([^}]+)\}\}", raw))
+        css_scope = (
+            re.sub(r"@media\b[^{]+", " ", style_blocks, flags=re.IGNORECASE) + "\n" + inline_styles + "\n" + jsx_styles
+        )
+
+        # W1a: Check max-width / maxWidth > 680px (supporting both px and rem)
+        wide_px: list[int] = []
+        for val_str, unit in re.findall(
+            r"(?:max-width|maxWidth)\s*:\s*['\"]?(\d+(?:\.\d+)?)\s*(px|rem)?\b",
+            css_scope,
+            flags=re.IGNORECASE,
+        ):
+            val_num = float(val_str)
+            px_equiv = int(round(val_num * 16.0)) if unit.lower() == "rem" else int(round(val_num))
+            if px_equiv > 680:
+                wide_px.append(px_equiv)
+
+        wide_tw = re.findall(r"\bmax-w-(?:3xl|4xl|5xl|6xl|7xl|screen-lg|screen-xl|screen-2xl)\b", raw)
+        if wide_px or wide_tw:
+            detail = f"max-width={wide_px[0]}px" if wide_px else f"class={wide_tw[0]}"
+            wf_violations.append(
+                f"{rel_name} [W1-Width]: wide desktop container ({detail} > 680px single-column budget)"
+            )
+
+        # W1b: Check multi-column split dashboard grids, wide flex split panes, or <aside> operator sidebars
+        split_grid_css = re.findall(
+            r"(?:grid-template-columns|gridTemplateColumns)\s*:\s*['\"]?(?:1fr\s+1fr|1\.\d+fr\s+1fr|\d+fr\s+\d+fr|repeat\(\s*[234]\s*,)",
+            css_scope,
+            flags=re.IGNORECASE,
+        )
+        split_flex_css = [
+            f"flex-split({val}{unit})"
+            for val, unit in re.findall(
+                r"\bflex\s*:\s*\d+\s+\d+\s+(\d+(?:\.\d+)?)(px|rem)\b", css_scope, flags=re.IGNORECASE
+            )
+            if (float(val) * 16.0 if unit.lower() == "rem" else float(val)) >= 320.0
+        ]
+        split_grid_tw = re.findall(r"\b(?:md|lg|xl):grid-cols-(?:2|3|4|12)\b|\bgrid-cols-12\b", raw)
+        has_aside = bool(re.search(r"<aside\b", raw, flags=re.IGNORECASE))
+        if split_grid_css or split_flex_css or split_grid_tw or has_aside:
+            g_det = (
+                split_grid_css[0]
+                if split_grid_css
+                else (
+                    split_flex_css[0]
+                    if split_flex_css
+                    else (split_grid_tw[0] if split_grid_tw else "<aside> operator sidebar")
+                )
+            )
+            wf_violations.append(f"{rel_name} [W1-SplitGrid]: multi-column control-plane layout ({g_det})")
+
+        # Strip <style> and HTML comments; decode HTML entities (`&nbsp;`, `&lt;`) across both markup and scripts
+        no_style = re.sub(r"<style\b[^>]*>[\s\S]*?</style>", " ", raw, flags=re.IGNORECASE)
+        no_style = re.sub(r"<!--[\s\S]*?-->", " ", no_style)
+        unescaped_surface = _html.unescape(no_style).replace("\xa0", " ")
+
+        visible_markup = re.sub(r"<script\b[^>]*>[\s\S]*?</script>", " ", unescaped_surface, flags=re.IGNORECASE)
+
+        # W2: Zero B2B operator / ERP telemetry jargon in visible consumer markup or client-rendered script strings
+        leaked_terms: list[str] = []
+        for label, pat in _WEDGE_B2B_JARGON_PATTERNS:
+            if pat.search(unescaped_surface):
+                leaked_terms.append(label)
+        if leaked_terms:
+            wf_violations.append(
+                f"{rel_name} [W2-JargonLeak]: B2B operator telemetry exposed to consumer ({', '.join(leaked_terms)})"
+            )
+
+        # W3: Progressive Disclosure on `snap` routes (Step 2/3 must actually be gated and wrap diagnosis/chat)
+        if wedge_kind == "snap":
+            has_progressive_gate = False
+            if wf.suffix.lower() in (".tsx", ".jsx"):
+                cond_match = re.search(
+                    r"\{\s*[a-zA-Z_$][\w$]*(?:\s*(?:>=|>|===|!==)\s*[^&?]+)?\s*(?:&&|\?)\s*\(",
+                    raw,
+                )
+                diag_pos = re.search(
+                    r"(?:snap-preview-canvas|snap-ai-marketplace-panel|canvas\b|chat)", raw, flags=re.IGNORECASE
+                )
+                if cond_match and (not diag_pos or cond_match.start() < diag_pos.start()):
+                    has_progressive_gate = True
+            else:
+                hidden_classes = set(
+                    re.findall(
+                        r"\.([a-zA-Z0-9_-]+)\s*\{[^}]*display\s*:\s*none",
+                        style_blocks,
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+                )
+                gate_tag_match = None
+                for m in re.finditer(r"<(section|div)\b([^>]*)>", visible_markup, flags=re.IGNORECASE):
+                    attrs = m.group(2)
+                    if re.search(r"\bhidden\b|display\s*:\s*none", attrs, flags=re.IGNORECASE):
+                        gate_tag_match = m
+                        break
+                    cls_m = re.search(r'\bclass\s*=\s*["\']([^"\']+)["\']', attrs, flags=re.IGNORECASE)
+                    if cls_m and any(c in hidden_classes for c in cls_m.group(1).split()):
+                        gate_tag_match = m
+                        break
+                diag_pos = re.search(r"(?:<canvas\b|snap-chat|chat-thread)", visible_markup, flags=re.IGNORECASE)
+                if gate_tag_match and diag_pos and gate_tag_match.start() < diag_pos.start():
+                    has_progressive_gate = True
+
+            if not has_progressive_gate:
+                wf_violations.append(
+                    f"{rel_name} [W3-ProgressiveDisclosure]: diagnosis/chat/marketplace sections are not hidden on first paint before photo selection (Law L6)"
+                )
+
+        # W4: Single-row header without multi-tab portal navigation (<= 2 links/buttons in <header> or <nav>)
+        header_nav_blocks = re.findall(
+            r"<(?:header|nav)\b[^>]*>([\s\S]*?)</(?:header|nav)>", visible_markup, flags=re.IGNORECASE
+        )
+        for nb in header_nav_blocks:
+            links_and_pills = len(re.findall(r"<(?:a|button)\b", nb, flags=re.IGNORECASE))
+            if links_and_pills >= 3:
+                wf_violations.append(
+                    f"{rel_name} [W4-PortalNav]: multi-tab portal header/nav ({links_and_pills} interactive items > 2 ceiling) on single-verb wedge"
+                )
+                break
+
+        violations.extend(wf_violations)
+        file_reports.append({"file": rel_name, "passed": len(wf_violations) == 0, "violations": wf_violations})
+
+    return {
+        "wedge_files_count": len(wedge_entries),
+        "passed": len(violations) == 0,
+        "violations": violations,
+        "files": file_reports,
+    }
 
 
 def evaluate_craft_lenses(
@@ -4099,6 +4366,38 @@ def evaluate_craft_lenses(
                             "status": "PASS",
                         }
                     )
+
+                # Probe 7: Law L6 & L9 — Human-Data Wedge Single-Verb & Anti-Palantir Gate ('We Are Not Palantir')
+                wedge_res = _audit_human_wedge_anti_palantir(root, web_ui_files)
+                if wedge_res["wedge_files_count"] > 0:
+                    if not wedge_res["passed"]:
+                        score = min(score, 6.5)
+                        veto_triggered = True
+                        probe_findings.append(
+                            "VETO [ux.wedge_anti_palantir]: Law L6 & L9 'We Are Not Palantir' Wedge Violation — "
+                            + "; ".join(wedge_res["violations"][:5])
+                        )
+                        probe_measurements.append(
+                            {
+                                "id": "ux.wedge_anti_palantir",
+                                "value": wedge_res,
+                                "target": "Single-column <=680px, progressive disclosure, 0 B2B telemetry leaks",
+                                "status": "VETO",
+                            }
+                        )
+                    else:
+                        probe_findings.append(
+                            f"PASS [ux.wedge_anti_palantir]: Law L6 & L9 ('We Are Not Palantir' Wedge Gate) verified across "
+                            f"{wedge_res['wedge_files_count']} consumer wedge surface(s) (single-column <=680px, progressive disclosure, 0 B2B telemetry leaks)"
+                        )
+                        probe_measurements.append(
+                            {
+                                "id": "ux.wedge_anti_palantir",
+                                "value": wedge_res,
+                                "target": "Single-column <=680px, progressive disclosure, 0 B2B telemetry leaks",
+                                "status": "PASS",
+                            }
+                        )
 
         elif lid == "spatial-cinema":
             mp4s = (
@@ -5361,7 +5660,7 @@ def _configure_gwi_parser(parser: argparse.ArgumentParser) -> None:
         "gwi_subcmd",
         nargs="?",
         default="audit",
-        help="Subcommand (`audit`, `calc`, `lenses`, `portfolio`, `prompt`) or path to target directory/video/tex",
+        help="Subcommand (`audit`, `status`, `subprojects`, `record-triad`, `calc`, `lenses`, `portfolio`, `prompt`) or path to target",
     )
     parser.add_argument(
         "gwi_args",
@@ -5393,6 +5692,28 @@ def _configure_gwi_parser(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--probe-audio", action="store_true", help="Run live ffmpeg EBU R128 loudness scan on video")
     parser.add_argument(
+        "--subprojects",
+        action="store_true",
+        help="Auto-discover and audit all subprojects (root, papers, web/apps, videos) inside target repository",
+    )
+    parser.add_argument(
+        "--incremental",
+        "--fast",
+        dest="incremental",
+        action="store_true",
+        help="Skip subprojects whose scoped Git tree SHA and `gwi_version` are already FRESH and PASS",
+    )
+    parser.add_argument(
+        "--disposition",
+        default="APPROVED",
+        help="Tri-Council disposition (`APPROVED` or `NOT_APPROVED`) when running `record-triad`",
+    )
+    parser.add_argument(
+        "--notes",
+        default="",
+        help="Optional summary notes when recording a Tri-Council (`record-triad`) audit",
+    )
+    parser.add_argument(
         "--agent", choices=("astra", "fable", "gx10", "triad"), default="astra", help="Target auditor for `gwi prompt`"
     )
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -5400,14 +5721,169 @@ def _configure_gwi_parser(parser: argparse.ArgumentParser) -> None:
 
 def cmd_gwi(args: argparse.Namespace) -> None:
     """Execute `skb gwi` / standalone `gwi` commands."""
+    from .audit_registry import (
+        AUDIT_REGISTRY_PATH,
+        discover_subprojects,
+        evaluate_subproject_freshness,
+        find_git_root,
+        get_sovereign_versions,
+        load_audit_registry,
+        record_gwi_audit,
+        record_triad_audit,
+    )
+
     subcmd = getattr(args, "gwi_subcmd", "audit") or "audit"
     rest = list(getattr(args, "gwi_args", []) or [])
     theta = float(getattr(args, "theta", DEFAULT_THETA))
     k = float(getattr(args, "k", DEFAULT_K))
 
-    if subcmd not in ("audit", "calc", "portfolio", "prompt", "lenses", "regularity", "kanon", "l7"):
+    valid_subcmds = (
+        "audit",
+        "calc",
+        "portfolio",
+        "prompt",
+        "lenses",
+        "regularity",
+        "kanon",
+        "l7",
+        "status",
+        "registry",
+        "history",
+        "subprojects",
+        "record-triad",
+    )
+    if subcmd not in valid_subcmds:
         rest = [subcmd, *rest]
         subcmd = "audit"
+
+    if subcmd == "record-triad":
+        target_p = Path(rest[0]).expanduser().resolve() if rest else Path.cwd().resolve()
+        subpath = rest[1] if len(rest) > 1 else "."
+        disp = str(getattr(args, "disposition", "APPROVED")).upper()
+        notes = str(getattr(args, "notes", ""))
+        triad_rec = record_triad_audit(
+            target_p,
+            subpath=subpath,
+            disposition=disp,
+            notes=notes,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(triad_rec, indent=2))
+        else:
+            print(
+                f"=== Recorded Sovereign Tri-Council Audit (`Fable 5.1` x `GPT-6 Astra`) ===\n"
+                f"  Target      : {find_git_root(target_p).name}:{subpath}\n"
+                f"  Commit/Tree : {triad_rec['commit_sha']} (tree={triad_rec['tree_sha']})\n"
+                f"  Disposition : {triad_rec['disposition']}\n"
+                f"  Models      : {triad_rec['fable_model']} + {triad_rec['astra_model']}\n"
+                f"  Versions    : kb={triad_rec['versions']['kb_version']} "
+                f"gwi={triad_rec['versions']['gwi_version']} "
+                f"swm={triad_rec['versions']['swm_version']}\n"
+                f"  Registry    : {AUDIT_REGISTRY_PATH}"
+            )
+        return
+
+    if subcmd == "subprojects":
+        target_p = Path(rest[0]).expanduser().resolve() if rest else Path.cwd().resolve()
+        subs = discover_subprojects(target_p)
+        rows = [evaluate_subproject_freshness(target_p, d["subpath"]) for d in subs]
+        if getattr(args, "json", False):
+            print(json.dumps({"repo_root": str(find_git_root(target_p)), "subprojects": rows}, indent=2))
+            return
+        print(f"=== Auto-Discovered Subprojects for `{find_git_root(target_p).name}` ===")
+        print(
+            f"  {'Subproject':<34} {'Profile':<7} {'Commit':<9} {'TreeSHA':<17} {'Freshness':<14} {'G(S)':>6}  {'Triad (Astra x Fable)'}"
+        )
+        print("  " + "-" * 112)
+        for r in rows:
+            g_str = f"{r['goldwood_g']:6.2f}" if isinstance(r.get("goldwood_g"), (int, float)) else "   N/A"
+            triad_str = (
+                f"{r['triad_disposition']} @ {r['triad_commit_sha']} ({(r['triad_audited_at'] or '')[:16]})"
+                if r["triad_ever_audited"]
+                else "NEVER AUDITED"
+            )
+            print(
+                f"  {r['target_label']:<34} {r['profile'].upper():<7} {r['current_commit']:<9} "
+                f"{r['current_tree']:<17} {r['freshness']:<14} {g_str}  {triad_str}"
+            )
+        return
+
+    if subcmd in ("status", "registry", "history"):
+        cur_ver = get_sovereign_versions()
+        reg = load_audit_registry()
+        if rest:
+            roots = [find_git_root(Path(p)) for p in rest if Path(p).expanduser().exists()]
+        else:
+            seen_roots: dict[str, Path] = {}
+            for v in reg.get("projects", {}).values():
+                if isinstance(v, dict) and v.get("repo_root"):
+                    rp = Path(v["repo_root"])
+                    if rp.is_dir():
+                        gr = find_git_root(rp)
+                        seen_roots[str(gr)] = gr
+            for d in discover_default_portfolio_dirs():
+                if d.is_dir():
+                    gr = find_git_root(d)
+                    seen_roots.setdefault(str(gr), gr)
+            for extra in (Path.home() / "GitHub" / "aristocracy", Path.home() / "GitHub" / "Flood3D_Unity"):
+                if extra.is_dir():
+                    gr = find_git_root(extra)
+                    seen_roots.setdefault(str(gr), gr)
+            roots = sorted(seen_roots.values(), key=lambda x: x.name.lower())
+
+        all_rows: list[dict[str, Any]] = []
+        for r_root in roots:
+            subs = discover_subprojects(r_root)
+            for d in subs:
+                all_rows.append(evaluate_subproject_freshness(r_root, d["subpath"]))
+
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    {
+                        "registry_path": str(AUDIT_REGISTRY_PATH),
+                        "current_versions": cur_ver,
+                        "targets": all_rows,
+                    },
+                    indent=2,
+                )
+            )
+            return
+
+        print(
+            f"=== Sovereign Audit Provenance & Subproject Cache Registry ===\n"
+            f"  Registry File    : {AUDIT_REGISTRY_PATH}\n"
+            f"  Current Versions : kb={cur_ver['kb_version']} ({cur_ver['kb_sha']}) | "
+            f"gwi={cur_ver['gwi_version']} | swm={cur_ver['swm_version']} ({cur_ver['swm_sha']}) | "
+            f"me-kb={cur_ver['me_kb_sha']}\n"
+        )
+        print(
+            f"  {'Project / Subproject':<34} {'Prof':<6} {'Last Audit':<17} {'Commit':<8} {'State':<13} "
+            f"{'G(S)':>6}  {'Triad (Fable x Astra)':<24} {'Versions (kb/gwi/swm)'}"
+        )
+        print("  " + "-" * 136)
+        for row in all_rows:
+            aud_ts = (row.get("audited_at") or "never")[:16].replace("T", " ")
+            g_str = f"{row['goldwood_g']:6.2f}" if isinstance(row.get("goldwood_g"), (int, float)) else "   N/A"
+            if row["triad_ever_audited"]:
+                triad_s = f"{row['triad_disposition']}@{row.get('triad_commit_sha') or '?'}"
+            else:
+                triad_s = "NEVER AUDITED"
+            v = row.get("versions") or {}
+            v_str = (
+                f"{v.get('kb_version', '-')}/{v.get('gwi_version', '-')}/{v.get('swm_version', '-')}" if v else "-/-/-"
+            )
+            print(
+                f"  {row['target_label']:<34} {row['profile'].upper():<6} {aud_ts:<17} "
+                f"{row['current_commit']:<8} {row['freshness']:<13} {g_str}  {triad_s:<24} {v_str}"
+            )
+        fresh_c = sum(1 for r in all_rows if r["freshness"] == "FRESH")
+        triad_c = sum(1 for r in all_rows if r["triad_ever_audited"])
+        print(
+            f"\n  Summary: {len(all_rows)} auditable target(s) across {len(roots)} repo(s) | "
+            f"{fresh_c}/{len(all_rows)} FRESH | {triad_c}/{len(all_rows)} Tri-Council Audited (`Fable 5.1` x `GPT-6 Astra`)."
+        )
+        return
 
     if subcmd in ("regularity", "kanon", "l7"):
         targets = (
@@ -5507,8 +5983,11 @@ def cmd_gwi(args: argparse.Namespace) -> None:
     if subcmd == "portfolio":
         strict_lenses = bool(getattr(args, "strict_lenses", False))
         targets = [Path(p).expanduser().resolve() for p in rest] if rest else discover_default_portfolio_dirs()
-        reports = [
-            evaluate_target(
+        reports = []
+        for t in targets:
+            if not t.exists():
+                continue
+            rep = evaluate_target(
                 t,
                 profile=getattr(args, "profile", "auto"),
                 probe_audio=getattr(args, "probe_audio", False),
@@ -5516,9 +5995,8 @@ def cmd_gwi(args: argparse.Namespace) -> None:
                 k=k,
                 strict_lenses=strict_lenses,
             )
-            for t in targets
-            if t.exists()
-        ]
+            record_gwi_audit(t, rep)
+            reports.append(rep)
         summary = {
             "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "standard_version": GWI_STANDARD_VERSION,
@@ -5557,6 +6035,91 @@ def cmd_gwi(args: argparse.Namespace) -> None:
 
     target_path = Path(rest[0]).expanduser().resolve() if rest else Path.cwd().resolve()
     strict_lenses = bool(getattr(args, "strict_lenses", False))
+    incremental = bool(getattr(args, "incremental", False))
+
+    if getattr(args, "subprojects", False) and subcmd == "audit":
+        subs = discover_subprojects(target_path)
+        sub_results: list[dict[str, Any]] = []
+        any_fail = False
+        for sp in subs:
+            sp_path = Path(sp["abs_path"])
+            fresh_info = evaluate_subproject_freshness(target_path, sp["subpath"])
+            if incremental and fresh_info["is_fresh_pass"]:
+                sub_results.append(
+                    {
+                        "subpath": sp["subpath"],
+                        "name": sp["name"],
+                        "profile": sp["profile"],
+                        "cache_hit": True,
+                        "freshness": fresh_info,
+                    }
+                )
+                if not getattr(args, "json", False):
+                    v = fresh_info.get("versions") or {}
+                    print(
+                        f"⚡ [CACHE HIT] {sp['name']} ({sp['profile'].upper()}) — FRESH @ {fresh_info['current_commit']} "
+                        f"(tree={fresh_info['current_tree']}, G={fresh_info['goldwood_g']:.2f} PASS, "
+                        f"kb={v.get('kb_version')}/gwi={v.get('gwi_version')}/swm={v.get('swm_version')})"
+                    )
+                continue
+
+            sp_rep = evaluate_target(
+                sp_path,
+                profile=sp["profile"],
+                probe_audio=getattr(args, "probe_audio", False),
+                theta=theta,
+                k=k,
+                strict_lenses=strict_lenses,
+            )
+            aud_rec = record_gwi_audit(sp_path, sp_rep)
+            if sp_rep["calculation"]["status"] != "PASS":
+                any_fail = True
+            sub_results.append(
+                {
+                    "subpath": sp["subpath"],
+                    "name": sp["name"],
+                    "profile": sp["profile"],
+                    "cache_hit": False,
+                    "audit_record": aud_rec,
+                    "report": sp_rep,
+                }
+            )
+            if not getattr(args, "json", False):
+                c = sp_rep["calculation"]
+                print(
+                    f"🔍 [AUDITED]   {sp['name']} ({sp['profile'].upper()}) @ {aud_rec['commit_sha']} "
+                    f"(tree={aud_rec['tree_sha']}) -> G={c['goldwood_g']:.2f} / 10.00 ({c['status']}, "
+                    f"blockers={len(sp_rep.get('blockers') or [])})"
+                )
+        if getattr(args, "json", False):
+            print(json.dumps({"repo_root": str(find_git_root(target_path)), "subprojects": sub_results}, indent=2))
+        if getattr(args, "strict", False) and any_fail:
+            sys.exit(1)
+        return
+
+    if incremental and subcmd == "audit":
+        root_dir = find_git_root(target_path)
+        try:
+            rel_sp = str(target_path.relative_to(root_dir)) if target_path != root_dir else "."
+        except ValueError:
+            rel_sp = "."
+        fresh_info = evaluate_subproject_freshness(root_dir, rel_sp)
+        if fresh_info["is_fresh_pass"]:
+            if getattr(args, "json", False):
+                print(json.dumps({"cache_hit": True, "freshness": fresh_info}, indent=2))
+            else:
+                v = fresh_info.get("versions") or {}
+                print(
+                    f"⚡ [CACHE HIT — SKIPPED RE-AUDIT] {fresh_info['target_label']} ({fresh_info['profile'].upper()})\n"
+                    f"  Last Audit : {fresh_info['audited_at']}\n"
+                    f"  Commit/Tree: {fresh_info['current_commit']} (tree={fresh_info['current_tree']}, dirty=False)\n"
+                    f"  Score      : G = {fresh_info['goldwood_g']:.2f} / 10.00 ({fresh_info['status']})\n"
+                    f"  Triad      : {fresh_info['triad_disposition']} "
+                    f"({'audited @ ' + str(fresh_info['triad_commit_sha']) if fresh_info['triad_ever_audited'] else 'never audited by Astra x Fable'})\n"
+                    f"  Versions   : kb={v.get('kb_version')} | gwi={v.get('gwi_version')} | swm={v.get('swm_version')}"
+                )
+            return
+
     report = evaluate_target(
         target_path,
         profile=getattr(args, "profile", "auto"),
@@ -5565,6 +6128,8 @@ def cmd_gwi(args: argparse.Namespace) -> None:
         k=k,
         strict_lenses=strict_lenses,
     )
+    audit_rec = record_gwi_audit(target_path, report)
+    report["audit_provenance"] = audit_rec
 
     if getattr(args, "write_evidence", False):
         ev_file = write_goldwood_evidence(target_path, report)
@@ -5586,8 +6151,24 @@ def cmd_gwi(args: argparse.Namespace) -> None:
         print(json.dumps(report, indent=2))
     else:
         print(format_audit_report(report))
+        v = audit_rec.get("versions") or {}
+        t_info = audit_rec.get("triad") or {}
+        triad_label = (
+            f"{t_info.get('disposition')} @ {t_info.get('commit_sha')} ({t_info.get('audited_at')})"
+            if t_info.get("ever_audited")
+            else "NEVER AUDITED BY ASTRA x FABLE"
+        )
+        print(
+            f"\n  [7. Sovereign Audit Provenance & Cache State]\n"
+            f"    • Recorded At       : {audit_rec['audited_at']} -> {AUDIT_REGISTRY_PATH}\n"
+            f"    • Target & Scope    : {audit_rec['name']} (commit={audit_rec['commit_sha']}, tree={audit_rec['tree_sha']})\n"
+            f"    • Models Executed   : {', '.join(audit_rec.get('models') or [])}\n"
+            f"    • Tri-Council State : {triad_label}\n"
+            f"    • Stack Versions    : kb={v.get('kb_version')} ({v.get('kb_sha')}) | "
+            f"gwi={v.get('gwi_version')} | swm={v.get('swm_version')} ({v.get('swm_sha')}) | me-kb={v.get('me_kb_sha')}"
+        )
         if report.get("evidence_file"):
-            print(f"\n  [Evidence Manifest Written]: {report['evidence_file']}")
+            print(f"    • Evidence Manifest : {report['evidence_file']}")
 
     cl = report.get("craft_lenses") or {}
     if getattr(args, "strict", False) and (report["calculation"]["status"] != "PASS" or cl.get("veto_triggered")):
