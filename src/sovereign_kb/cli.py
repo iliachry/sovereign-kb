@@ -3780,9 +3780,19 @@ def cmd_skills(args) -> None:
                         return str(data["description"]).strip().splitlines()[0]
                 except Exception:
                     pass
-                for line in fm.splitlines():
+                lines = fm.splitlines()
+                for idx, line in enumerate(lines):
                     if line.startswith("description:"):
-                        return line[len("description:") :].strip().strip('"').strip("'")
+                        val = line[len("description:") :].strip().strip('"').strip("'")
+                        if val in (">-", ">", "|", "|-"):
+                            cont = []
+                            for nxt in lines[idx + 1 :]:
+                                if nxt.startswith((" ", "\t")):
+                                    cont.append(nxt.strip())
+                                else:
+                                    break
+                            return " ".join(cont)
+                        return val
         except Exception:
             pass
         return ""
