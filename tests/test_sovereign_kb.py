@@ -1285,6 +1285,42 @@ def test_kb_sessions_and_unity_anti_deadlock_gates(tmp_path: Path) -> None:
     assert f"antigravity-multi-conversation-layout-v3-{active_cid}" in stored_app
     assert f"antigravity-multi-conversation-layout-v3-{new_born_cid}" in stored_app
 
+    # 5. Verify `inspect_session` detects `pending_followup` and `only_ids` selectively cleans target + child subagents
+    followup_cid = "44444444-4444-4444-4444-444444444444"
+    target_cid = "55555555-5555-5555-5555-555555555555"
+    for cid_x, final_txt in (
+        (followup_cid, "### Θέλεις να προχωρήσω;\nWould you like me to run an oc triad review now?"),
+        (target_cid, "Pushed and verified on main."),
+    ):
+        d_x = mock_brain / cid_x
+        (d_x / ".system_generated" / "logs").mkdir(parents=True)
+        t_x = d_x / ".system_generated" / "logs" / "transcript.jsonl"
+        t_x.write_text(
+            json.dumps({"step_index": 1, "type": "USER_INPUT", "status": "DONE", "content": "audit"})
+            + "\n"
+            + json.dumps({"step_index": 2, "type": "PLANNER_RESPONSE", "status": "DONE", "content": final_txt})
+            + "\n",
+            encoding="utf-8",
+        )
+        os.utime(t_x, (now_ts - 600.0, now_ts - 600.0))
+
+    info_fu = inspect_session(mock_brain / followup_cid, now=now_ts)
+    assert info_fu is not None and info_fu["pending_followup"] is True
+    info_tg = inspect_session(mock_brain / target_cid, now=now_ts)
+    assert info_tg is not None and info_tg["pending_followup"] is False
+
+    only_res = clean_antigravity_sessions(
+        agy_dir=mock_agy,
+        app_storage_path=app_storage,
+        archive_dir=mock_archive,
+        dry_run=False,
+        only_ids=["55555555"],
+        min_idle_seconds=120,
+        now=now_ts,
+    )
+    assert [c["conversation_id"] for c in only_res["cleaned_sessions"]] == [target_cid]
+    assert (mock_brain / followup_cid).is_dir()
+
 
 def test_law_l7_simplicity_favors_regularity_kanonikotita(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from sovereign_kb.gwi import (

@@ -53,6 +53,82 @@ FATAL_TAIL_PATTERNS = [
 
 RECOVERY_MARKER_RE = re.compile(r"(?:^> build ·|^→ Read |^=== [A-Z0-9 _.-]+ ===|\bdone$|\bok$)", re.I)
 
+FOLLOWUP_TAIL_RE = re.compile(
+    r"(?:would you like me to|shall i|do you want me to|how would you like to proceed|"
+    r"recommended next steps|θέλεις να προχωρήσω|να προχωρήσω|θέλεις να εκτελέσω|"
+    r"FAIL,\s*blockers=[1-9])",
+    re.I,
+)
+
+EXTERNAL_USER_ACTION_RE = re.compile(
+    r"(?:ready to send|σας επισυνάπτω το ολοκληρωμένο χειρόγραφο|plain-text.*report|"
+    r"flood3d research papers\s*\*\s*completed and finalized)",
+    re.I | re.S,
+)
+
+
+def _extract_followup_and_external_signals(
+    conv_dir: Path, steps: list[dict[str, Any]], last_content: str
+) -> dict[str, Any]:
+    """
+    Deterministically inspect the final assistant message, `ask_question` tool calls, and `task.md`
+    so even lightweight models (`Flash` / `Flash-Lite`) running `kb sessions` see unexecuted follow-ups
+    and user copy/send actions without needing ad-hoc transcript scripts.
+    """
+    last_agent_text = last_content
+    ask_question_text = ""
+
+    for st in reversed(steps[-6:]):
+        if st.get("type") != "PLANNER_RESPONSE":
+            continue
+        for tc in st.get("tool_calls") or []:
+            if isinstance(tc, dict) and tc.get("name") == "ask_question":
+                args = tc.get("args") or {}
+                q_raw = str(args.get("questions") or "")
+                ask_question_text = " ".join(q_raw.split())[:220]
+                break
+        c = str(st.get("content") or "").strip()
+        if c and not last_agent_text:
+            last_agent_text = c
+        if last_agent_text and ask_question_text:
+            break
+
+    unchecked_tasks: list[str] = []
+    task_md = conv_dir / "task.md"
+    if task_md.is_file():
+        try:
+            for ln in task_md.read_text(encoding="utf-8", errors="ignore").splitlines():
+                s_ln = ln.strip()
+                if s_ln.startswith(("- [ ]", "* [ ]", "- [/]", "* [/]")):
+                    unchecked_tasks.append(s_ln[:140])
+        except Exception:
+            pass
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", last_agent_text) if p.strip()]
+    tail_snippet = " ".join((paragraphs[-1] if paragraphs else last_agent_text).split())[-220:]
+    tail_window = "\n".join(paragraphs[-3:]) if paragraphs else last_agent_text
+
+    pending_reasons: list[str] = []
+    if ask_question_text:
+        pending_reasons.append(f"ask_question: {ask_question_text}")
+    if unchecked_tasks:
+        pending_reasons.append(f"task.md unchecked ({len(unchecked_tasks)}): {unchecked_tasks[0]}")
+    if FOLLOWUP_TAIL_RE.search(tail_window):
+        pending_reasons.append(tail_snippet)
+
+    external_action = ""
+    if EXTERNAL_USER_ACTION_RE.search(last_agent_text):
+        external_action = tail_snippet
+
+    return {
+        "last_agent_tail": tail_snippet,
+        "pending_followup": bool(pending_reasons),
+        "pending_followup_summary": " | ".join(pending_reasons)[:260] if pending_reasons else "",
+        "external_user_action": bool(external_action),
+        "external_action_summary": external_action[:220],
+        "unchecked_task_count": len(unchecked_tasks),
+    }
+
 
 def inspect_session(conv_dir: Path, now: float | None = None) -> dict[str, Any] | None:
     if now is None:
@@ -230,6 +306,8 @@ def inspect_session(conv_dir: Path, now: float | None = None) -> dict[str, Any] 
     else:
         state = "IDLE"
 
+    signals = _extract_followup_and_external_signals(conv_dir, steps, last_content)
+
     return {
         "conversation_id": conv_dir.name,
         "state": state,
@@ -242,6 +320,7 @@ def inspect_session(conv_dir: Path, now: float | None = None) -> dict[str, Any] 
         "last_user_prompt": last_user_prompt,
         "last_user_step": last_user_step,
         "running_tasks": task_diagnostics,
+        **signals,
     }
 
 
@@ -799,9 +878,9 @@ def _sync_sidebar_stores(
     return res
 
 
-def _query_summaries_liveness(db_path: Path) -> dict[str, tuple[str, int, str]]:
-    """Read `(status, not_fully_idle, title)` from `conversation_summaries.db`."""
-    out: dict[str, tuple[str, int, str]] = {}
+def _query_summaries_liveness(db_path: Path) -> dict[str, tuple[str, int, str, str]]:
+    """Read `(status, not_fully_idle, title, parent_conversation_id)` from `conversation_summaries.db`."""
+    out: dict[str, tuple[str, int, str, str]] = {}
     if not db_path.is_file():
         return out
     try:
@@ -810,10 +889,11 @@ def _query_summaries_liveness(db_path: Path) -> dict[str, tuple[str, int, str]]:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()}
             if {"conversation_id", "status", "not_fully_idle"}.issubset(cols):
                 title_col = "title" if "title" in cols else "''"
-                for cid, st, nfi, title in conn.execute(
-                    f"SELECT conversation_id, status, not_fully_idle, {title_col} FROM conversation_summaries"
+                parent_col = "parent_conversation_id" if "parent_conversation_id" in cols else "''"
+                for cid, st, nfi, title, parent_cid in conn.execute(
+                    f"SELECT conversation_id, status, not_fully_idle, {title_col}, {parent_col} FROM conversation_summaries"
                 ):
-                    out[str(cid)] = (str(st or ""), int(nfi or 0), str(title or ""))
+                    out[str(cid)] = (str(st or ""), int(nfi or 0), str(title or ""), str(parent_cid or ""))
         finally:
             conn.close()
     except Exception:
@@ -827,6 +907,7 @@ def clean_antigravity_sessions(
     archive_dir: Path | None = None,
     dry_run: bool = False,
     keep_ids: list[str] | None = None,
+    only_ids: list[str] | None = None,
     min_idle_seconds: int = 120,
     now: float | None = None,
 ) -> dict[str, Any]:
@@ -835,6 +916,7 @@ def clean_antigravity_sessions(
     Antigravity sessions and purge them from `brain/`, `conversations/`, `annotations/`, `presence/`,
     `conversation_summaries.db`, `agyhub_summaries_proto.pb`, and `app_storage.json` while strictly protecting
     all active/waiting/deadlocked/interrupted sessions and the current active chat.
+    When `only_ids` is provided, purges ONLY sessions (and their idle child subagents) matching `only_ids`.
     """
     if now is None:
         now = time.time()
@@ -846,6 +928,7 @@ def clean_antigravity_sessions(
         archive_dir = agy_dir / "archive-artifacts"
 
     keep_prefixes = [k.strip() for k in (keep_ids or []) if k and k.strip()]
+    only_prefixes = [o.strip() for o in (only_ids or []) if o and o.strip()]
     brain_dir = agy_dir / "brain"
     conv_db_dir = agy_dir / "conversations"
     annot_dir = agy_dir / "annotations"
@@ -870,7 +953,7 @@ def clean_antigravity_sessions(
             c_pres = presence_dir / f"{cid}.lock"
             info = inspect_session(c_brain, now=now) if c_brain.is_dir() else None
 
-            sum_status, sum_not_idle, sum_title = summaries_liveness.get(cid, ("", 0, ""))
+            sum_status, sum_not_idle, sum_title, sum_parent = summaries_liveness.get(cid, ("", 0, "", ""))
 
             if info is not None:
                 state = info["state"]
@@ -895,6 +978,23 @@ def clean_antigravity_sessions(
                             pass
                 age_s = int(max(0.0, now - mtime)) if mtime > 0 else 999999
                 first_prompt = sum_title or ""
+
+            # 0. If --only / only_ids is specified, keep everything not matching `only_prefixes` (or child of `only_prefixes`)
+            if only_prefixes and not (
+                any(cid.startswith(op) for op in only_prefixes)
+                or (sum_parent and any(sum_parent.startswith(op) for op in only_prefixes))
+            ):
+                valid_kept_ids.add(cid)
+                kept.append(
+                    {
+                        "conversation_id": cid,
+                        "state": state,
+                        "last_activity_age_s": age_s,
+                        "reason": "not_in_only_filter",
+                        "first_user_prompt": first_prompt,
+                    }
+                )
+                continue
 
             # 1. Explicit --keep prefix match
             if any(cid.startswith(kp) for kp in keep_prefixes):
@@ -1091,6 +1191,14 @@ def register_sessions_subparser(subparsers: Any, show_all_aliases: bool = False)
             help="Conversation ID or prefix to explicitly keep during `--clean` (may be specified multiple times)",
         )
         p.add_argument(
+            "--only",
+            "--id",
+            dest="only",
+            action="append",
+            default=[],
+            help="Conversation ID or prefix to selectively clean (and its idle child subagents) while keeping all others",
+        )
+        p.add_argument(
             "--include-recent",
             action="store_true",
             help="Also clean idle sessions modified within the last 120s (use on idle nodes only)",
@@ -1107,11 +1215,13 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     if getattr(args, "clean", False):
         dry_run = bool(getattr(args, "dry_run", False))
         keep_ids = list(getattr(args, "keep", None) or [])
+        only_ids = list(getattr(args, "only", None) or [])
         include_recent = bool(getattr(args, "include_recent", False))
         min_idle = 0 if include_recent else 120
         report = clean_antigravity_sessions(
             dry_run=dry_run,
             keep_ids=keep_ids,
+            only_ids=only_ids,
             min_idle_seconds=min_idle,
         )
         if getattr(args, "check_remote", False):
@@ -1125,6 +1235,9 @@ def cmd_sessions(args: argparse.Namespace) -> None:
                 for kid in keep_ids:
                     if re.fullmatch(r"[A-Za-z0-9_-]+", kid):
                         remote_flags.extend(["--keep", kid])
+                for oid in only_ids:
+                    if re.fullmatch(r"[A-Za-z0-9_-]+", oid):
+                        remote_flags.extend(["--only", oid])
                 try:
                     raw_rem = _run_node_shell(
                         remote_peer,
@@ -1202,6 +1315,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     active_count = sum(
         1 for s in sessions if s["state"] in ("ACTIVE_TOOL_LOOP", "WAITING_ON_BG_TASK", "DEADLOCKED_BG_TASK")
     )
+    followup_count = sum(1 for s in sessions if s.get("pending_followup"))
     quiet = getattr(args, "quiet", False)
 
     remote_checks = []
@@ -1222,6 +1336,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
             json.dumps(
                 {
                     "active_sessions_count": active_count,
+                    "pending_followup_count": followup_count,
                     "deadlocked_count": deadlocked_count,
                     "safe_to_restart": active_count == 0,
                     "sessions": sessions,
@@ -1235,7 +1350,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     window_lbl = f"{minutes}m" if minutes > 0 else "all-open"
     print(
         f"=== Sovereign Agent Session & Background Task Auditor (`kb sessions`, window={window_lbl}, total={len(sessions)}) ===\n"
-        f"  Active / Running Sessions : {active_count} | Deadlocks Detected: {deadlocked_count} "
+        f"  Active / Running Sessions : {active_count} | Pending Follow-Ups: {followup_count} | Deadlocks Detected: {deadlocked_count} "
         f"| Safe to Restart IDE: {'YES' if active_count == 0 else 'NO'}"
     )
 
@@ -1245,10 +1360,17 @@ def cmd_sessions(args: argparse.Namespace) -> None:
         age = s["last_activity_age_s"]
         step = s["last_step_index"]
         prompt = s["first_user_prompt"] or "(no user prompt)"
-        print(f"\n  [{st:20s}] {cid} (step={step}, last_event={age}s ago)")
+        disp_st = "IDLE_FOLLOWUP_OPEN" if (st == "IDLE_COMPLETE" and s.get("pending_followup")) else st
+        print(f"\n  [{disp_st:20s}] {cid} (step={step}, last_event={age}s ago)")
         print(f"    Initial Prompt : {prompt}")
         if s["last_user_prompt"] and s["last_user_prompt"] != s["first_user_prompt"]:
             print(f"    Latest Prompt  : [step {s['last_user_step']}] {s['last_user_prompt']}")
+        if s.get("pending_followup_summary"):
+            print(f"    Pending Action : {s['pending_followup_summary']}")
+        elif s.get("last_agent_tail"):
+            print(f"    Agent Tail     : {s['last_agent_tail']}")
+        if s.get("external_action_summary"):
+            print(f"    External Send  : {s['external_action_summary']}")
         if s["running_tasks"]:
             for rt in s["running_tasks"]:
                 print(f"    Running Task   : {rt['task_id']} (log idle={rt['log_idle_s']}s)")
