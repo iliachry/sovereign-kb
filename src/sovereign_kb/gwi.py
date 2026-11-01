@@ -4756,7 +4756,16 @@ def evaluate_craft_lenses(
                 if root.is_dir()
                 else ([resolved.with_suffix(".pdf")] if resolved.with_suffix(".pdf").is_file() else [])
             )
-            tex_corpus = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in tex_files[:10])
+            # Include main.tex/preamble.tex if present, plus first tex files
+            ordered_tex_files = []
+            for preferred in ["main.tex", "preamble.tex"]:
+                p_cand = root / preferred if root.is_dir() else None
+                if p_cand and p_cand.is_file():
+                    ordered_tex_files.append(p_cand)
+            for tf in tex_files:
+                if tf not in ordered_tex_files:
+                    ordered_tex_files.append(tf)
+            tex_corpus = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in ordered_tex_files[:15])
             has_microtype = "microtype" in tex_corpus
             has_booktabs = "booktabs" in tex_corpus
             if has_microtype and has_booktabs:
