@@ -21,6 +21,7 @@ Includes:
 from __future__ import annotations
 
 import argparse
+import array
 import contextlib
 import datetime
 import hashlib
@@ -45,7 +46,7 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STARTER_VAULT_DIR = Path(__file__).resolve().parent / "starter_vault"
 CONFIG_PATH = Path.home() / ".config" / "sovereign-kb" / "config.json"
 
@@ -208,11 +209,25 @@ def get_db(vault_dir: Path) -> sqlite3.Connection:
 
     user_ver = conn.execute("PRAGMA user_version;").fetchone()[0]
     if user_ver != SCHEMA_VERSION:
-        cached_vecs: dict[tuple[str, str], str] = {}
+        cached_vecs: dict[tuple[str, str], bytes] = {}
         try:
             for r in conn.execute("SELECT rel_path, content, embedding FROM chunks WHERE embedding IS NOT NULL"):
-                h = hashlib.sha256(r["content"].encode("utf-8")).hexdigest()
-                cached_vecs[(r["rel_path"], h)] = r["embedding"]
+                raw_emb = r["embedding"]
+                if raw_emb is None:
+                    continue
+                blob_emb: bytes | None = None
+                if isinstance(raw_emb, (bytes, bytearray)):
+                    blob_emb = bytes(raw_emb)
+                elif isinstance(raw_emb, str):
+                    try:
+                        floats = json.loads(raw_emb)
+                        if isinstance(floats, list) and len(floats) > 0:
+                            blob_emb = array.array("f", floats).tobytes()
+                    except Exception:
+                        pass
+                if blob_emb:
+                    h = hashlib.sha256(r["content"].encode("utf-8")).hexdigest()
+                    cached_vecs[(r["rel_path"], h)] = blob_emb
         except sqlite3.OperationalError:
             pass
 
@@ -228,7 +243,7 @@ def get_db(vault_dir: Path) -> sqlite3.Connection:
         _create_tables(conn)
         conn.commit()
         if cached_vecs:
-            conn.execute("CREATE TEMP TABLE IF NOT EXISTS _vec_cache (rel_path TEXT, sha TEXT, embedding TEXT);")
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS _vec_cache (rel_path TEXT, sha TEXT, embedding BLOB);")
             conn.executemany(
                 "INSERT INTO _vec_cache VALUES (?, ?, ?)",
                 [(k[0], k[1], v) for k, v in cached_vecs.items()],
@@ -255,13 +270,17 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rel_path TEXT,
+            title TEXT,
+            doc_type TEXT,
+            tags TEXT,
             heading TEXT,
             heading_path TEXT,
             start_line INTEGER,
             end_line INTEGER,
             content TEXT,
             folded_content TEXT,
-            embedding TEXT
+            is_vector_eligible INTEGER NOT NULL DEFAULT 1,
+            embedding BLOB
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
             rel_path,
@@ -270,7 +289,9 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             tags,
             heading_path,
             content,
-            folded_content
+            folded_content,
+            content='chunks',
+            content_rowid='id'
         );
         CREATE TABLE IF NOT EXISTS links (
             source_path TEXT,
@@ -279,6 +300,36 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def is_doc_vector_eligible(rel_path: str, updated_date: str = "", max_episodic_days: int = 60) -> bool:
+    """
+    Tier-aware vector admission guardrail:
+    Canonical semantic notes (00-identity, 01-now, 02-operating-system, 03-life-domains, INDEX, AGENTS)
+    are always embedded.
+    Episodic logs older than max_episodic_days (default 60) remain full-text (FTS5 BM25) and
+    Block-Max WAND (hips) indexed but skip dense vector embedding.
+    """
+    if not rel_path.startswith("04-episodic/"):
+        return True
+
+    date_str = ""
+    stem = Path(rel_path).stem
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})", stem)
+    if m:
+        date_str = m.group(1)
+    elif updated_date and re.match(r"^\d{4}-\d{2}-\d{2}$", updated_date):
+        date_str = updated_date
+
+    if not date_str:
+        return True
+
+    try:
+        doc_d = datetime.date.fromisoformat(date_str)
+        today = datetime.date.today()
+        return (today - doc_d).days <= max_episodic_days
+    except Exception:
+        return True
 
 
 def list_vault_md_files(vault_dir: Path) -> list[Path]:
@@ -849,8 +900,21 @@ def cmd_sync(args) -> None:
             "SELECT content, embedding FROM chunks WHERE rel_path = ? AND embedding IS NOT NULL",
             (rel_path,),
         ):
-            sha = hashlib.sha256(r["content"].encode("utf-8")).hexdigest()
-            temp_vec_cache[(rel_path, sha)] = r["embedding"]
+            raw_emb = r["embedding"]
+            if raw_emb is None:
+                continue
+            if isinstance(raw_emb, (bytes, bytearray)):
+                blob_emb = bytes(raw_emb)
+            elif isinstance(raw_emb, str):
+                try:
+                    blob_emb = array.array("f", json.loads(raw_emb)).tobytes()
+                except Exception:
+                    blob_emb = None
+            else:
+                blob_emb = None
+            if blob_emb:
+                sha = hashlib.sha256(r["content"].encode("utf-8")).hexdigest()
+                temp_vec_cache[(rel_path, sha)] = blob_emb
 
         old_ids = [r["id"] for r in conn.execute("SELECT id FROM chunks WHERE rel_path = ?", (rel_path,))]
         for cid in old_ids:
@@ -873,25 +937,37 @@ def cmd_sync(args) -> None:
                     (rel_path, target),
                 )
 
+        vec_eligible = 1 if is_doc_vector_eligible(rel_path, str(meta["updated"]), max_episodic_days=60) else 0
+
         for heading, heading_path, start_line, end_line, chunk_body in split_markdown_chunks(text, title):
             sha = hashlib.sha256(chunk_body.encode("utf-8")).hexdigest()
-            vec_json = temp_vec_cache.get((rel_path, sha)) if not getattr(args, "force", False) else None
-            if not vec_json and not no_embed:
-                embed_input = f"{title} — {heading_path}\nTags: {tags}\n{chunk_body}"
-                vec = get_embedding(embed_input)
-                if vec:
-                    vec_json = json.dumps(vec)
+            vec_blob: bytes | None = None
+            if vec_eligible:
+                cached_vec = temp_vec_cache.get((rel_path, sha)) if not getattr(args, "force", False) else None
+                if cached_vec is not None:
+                    if isinstance(cached_vec, (bytes, bytearray)):
+                        vec_blob = bytes(cached_vec)
+                    elif isinstance(cached_vec, str):
+                        try:
+                            vec_blob = array.array("f", json.loads(cached_vec)).tobytes()
+                        except Exception:
+                            pass
+                if not vec_blob and not no_embed:
+                    embed_input = f"{title} — {heading_path}\nTags: {tags}\n{chunk_body}"
+                    vec = get_embedding(embed_input)
+                    if vec:
+                        vec_blob = array.array("f", vec).tobytes()
+                        embedded_count += 1
+                elif vec_blob:
                     embedded_count += 1
-            elif vec_json:
-                embedded_count += 1
 
             folded_body = fold_accents(f"{title} {heading_path} {tags} {chunk_body}")
             cur = conn.execute(
                 """
-                INSERT INTO chunks (rel_path, heading, heading_path, start_line, end_line, content, folded_content, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO chunks (rel_path, title, doc_type, tags, heading, heading_path, start_line, end_line, content, folded_content, is_vector_eligible, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (rel_path, heading, heading_path, start_line, end_line, chunk_body, folded_body, vec_json),
+                (rel_path, title, doc_type, tags, heading, heading_path, start_line, end_line, chunk_body, folded_body, vec_eligible, vec_blob),
             )
             rowid = cur.lastrowid
             conn.execute(
@@ -1188,10 +1264,27 @@ def hybrid_retrieve(
             hips_scores[cid] = hips_key_scores[hkey]
 
     if q_vec:
+        q_norm = math.sqrt(sum(x * x for x in q_vec))
+        q_unit = [x / q_norm for x in q_vec] if q_norm > 0.0 else q_vec
+
         scored = []
         for cid, c in chunk_map.items():
-            if c["embedding"]:
-                sim = cosine_sim(q_vec, json.loads(c["embedding"]))
+            raw_emb = c["embedding"]
+            if raw_emb:
+                if isinstance(raw_emb, (bytes, bytearray)):
+                    c_vec = array.array("f", raw_emb)
+                elif isinstance(raw_emb, str):
+                    try:
+                        c_vec = json.loads(raw_emb)
+                    except Exception:
+                        continue
+                else:
+                    continue
+                c_norm = math.sqrt(sum(x * x for x in c_vec))
+                if c_norm > 0.0:
+                    sim = sum(x * y for x, y in zip(q_unit, c_vec)) / c_norm
+                else:
+                    sim = 0.0
                 vec_scores[cid] = sim
                 scored.append((sim, cid))
         scored.sort(reverse=True)
@@ -1241,7 +1334,9 @@ def hybrid_retrieve(
 
         if score > 0:
             doc_t = str(doc_meta.get(c["rel_path"], {}).get("doc_type", "")).lower()
-            if doc_t in ("rsi-ledger", "distillation-ledger") or (
+            if doc_t in ("identity", "operating-system", "now", "venture", "research", "life-domain", "moc", "decision"):
+                score *= 1.20
+            elif doc_t in ("rsi-ledger", "distillation-ledger") or (
                 c["rel_path"] == "02-operating-system/autonomous-rsi-distillations.md"
             ):
                 score *= 0.60
@@ -1738,7 +1833,8 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
 
     doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    vec_count = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL").fetchone()[0]
+    eligible_vec_count = conn.execute("SELECT COUNT(*) FROM chunks WHERE is_vector_eligible = 1").fetchone()[0]
+    vec_count = conn.execute("SELECT COUNT(*) FROM chunks WHERE is_vector_eligible = 1 AND embedding IS NOT NULL").fetchone()[0]
     hips_idx_dir = vault_dir / ".kb" / "hips-index"
     hips_ready = hips_idx_dir.is_dir() and any(hips_idx_dir.iterdir())
     require_embed = getattr(args, "require_embeddings", False)
@@ -1758,15 +1854,15 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
                 "issue": "Zero indexed chunks; run 'sovereign-kb sync'",
             }
         )
-    elif not allow_lexical and vec_count < chunk_count:
-        # Fail if partial embeddings exist (0 < vec_count < chunk_count), or if --require-embeddings is set,
+    elif not allow_lexical and vec_count < eligible_vec_count:
+        # Fail if partial embeddings exist (0 < vec_count < eligible_vec_count), or if --require-embeddings is set,
         # or if an embedding server is currently reachable online.
         if vec_count > 0 or require_embed or get_embedding("ping") is not None:
             violations.append(
                 {
                     "gate": "Gate 4 (Embeddings)",
                     "file": ".kb/index.db",
-                    "issue": f"Incomplete vector embeddings ({vec_count}/{chunk_count}); run 'sovereign-kb sync'",
+                    "issue": f"Incomplete vector embeddings ({vec_count}/{eligible_vec_count} eligible chunks); run 'sovereign-kb sync'",
                 }
             )
     try:

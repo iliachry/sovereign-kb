@@ -252,13 +252,15 @@ def check_measurement_provenance(root: Path) -> tuple[list[dict[str, Any]], list
             related = []
         else:
             related = [p for p, nt in script_norm.items() if tok in nt]
+        tok_in_traces = any(tok in t.lower() for t in traces) if traces else False
         if related:
-            if any(p in acquiring for p in related) or traces:
+            if any(p in acquiring for p in related) or tok_in_traces:
                 continue
             loc["tokens"].append(hw_label)
             loc["scripts"].extend(_rel(p, root) for p in related)
         else:
-            if acquiring or traces:
+            tok_acquiring = [p for p in acquiring if tok in script_norm.get(p, "")]
+            if tok_acquiring or tok_in_traces:
                 continue
             loc["nowhere"].append(hw_label)
     for head, info in by_loc.items():

@@ -400,7 +400,24 @@ def evaluate_app_profile(
                     elif fid not in spec_file.read_text(encoding="utf-8", errors="ignore"):
                         spec_drift.append(f"{fid} not exercised in `{rel_spec}`")
 
-        if spec_drift:
+        has_test_assertions = bool(
+            re.search(
+                r"\b(?:assert\b|expect\s*\(|assert_|assertEqual|assertTrue|assertFalse|assert_called|toBe|toEqual|toStrictEqual|toMatch|rejects|resolves|should)\b|assert(?:_eq|_ne)?\s*!",
+                test_corpus,
+            )
+        )
+        if test_files and not has_test_assertions:
+            score_u = 6.6
+            probe_states["U"] = "FAIL"
+            blockers.append(
+                {
+                    "id": "GWI-APP-U04",
+                    "severity": "P0",
+                    "dimension": "U (Instrument Usability & Test Assertions)",
+                    "message": "Test files lack executable assertions (e.g. `assert`, `expect(...)`, `assert_eq!`). Hollow test stubs detected.",
+                }
+            )
+        elif spec_drift:
             score_u = 7.4
             probe_states["U"] = "FAIL"
             blockers.append(
@@ -616,16 +633,43 @@ def evaluate_app_profile(
 
     gate_trap_issues = _check_bash_negated_grep_trap(gate_sh)
     if gate_sh.is_file():
-        score_s = 9.7 if not gate_trap_issues else 8.5
-        for issue in gate_trap_issues:
+        gate_txt = gate_sh.read_text(encoding="utf-8", errors="ignore")
+        missing_runner = False
+        if "vitest" in gate_txt and not (
+            (root / "package.json").is_file()
+            and "vitest" in (root / "package.json").read_text(encoding="utf-8", errors="ignore")
+        ):
+            missing_runner = True
+        elif "pytest" in gate_txt and not (
+            (root / "pyproject.toml").is_file()
+            or (root / "setup.py").is_file()
+            or (root / "requirements.txt").is_file()
+            or any(p.suffix == ".py" for p in test_files)
+        ):
+            missing_runner = True
+
+        if missing_runner:
+            score_s = 6.4
+            probe_states["S"] = "FAIL"
             blockers.append(
                 {
-                    "id": "GWI-APP-S01",
-                    "severity": "P1",
+                    "id": "GWI-APP-S03",
+                    "severity": "P0",
                     "dimension": "S (System & Gate Hygiene)",
-                    "message": issue,
+                    "message": "`scripts/quality_gate.sh` invokes an unconfigured test runner not found in package manifests or test files.",
                 }
             )
+        else:
+            score_s = 9.7 if not gate_trap_issues else 8.5
+            for issue in gate_trap_issues:
+                blockers.append(
+                    {
+                        "id": "GWI-APP-S01",
+                        "severity": "P1",
+                        "dimension": "S (System & Gate Hygiene)",
+                        "message": issue,
+                    }
+                )
     elif has_pkg_verify or has_pyproject_test or has_cargo_manifest:
         score_s = 9.2
     else:
@@ -695,6 +739,35 @@ def evaluate_app_profile(
                     }
                 )
             else:
+                if df.name == "report.json" and "playwright" in str(df):
+                    has_browser_harness = (
+                        any(
+                            "playwright" in p.read_text(encoding="utf-8", errors="ignore").lower()
+                            for p in (
+                                list(root.glob("package.json"))
+                                + list(root.glob("scripts/*.sh"))
+                                + list(root.glob("scripts/*.py"))
+                            )
+                        )
+                        or any(
+                            "playwright" in p.name.lower() or "e2e" in p.name.lower() or "spec" in p.name.lower()
+                            for p in test_files
+                        )
+                        or (root / "playwright.config.ts").is_file()
+                        or (root / "playwright.config.js").is_file()
+                    )
+                    if not has_browser_harness:
+                        score_r = min(score_r, 6.8)
+                        probe_states["R"] = "UNMEASURED"
+                        blockers.append(
+                            {
+                                "id": "GWI-APP-R04",
+                                "severity": "P0",
+                                "dimension": "R (Release Telemetry & Harness Provenance)",
+                                "message": f"Ungrounded telemetry in {df.relative_to(root)}: repository lacks Playwright test dependencies or test scripts to generate browser diagnostics.",
+                            }
+                        )
+                        continue
                 seen_clean_diag = True
                 notes.append(f"Verified 0 runtime console/page/HTTP/secret errors in {df.relative_to(root)}.")
         except Exception as exc:

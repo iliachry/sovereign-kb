@@ -1118,16 +1118,19 @@ def run_rsi_cycle(
         committed_policy = tuning["policy"]
         committed_policy_sha = tuning["policy_sha256"]
         committed_updated = tuning["updated"]
-        status = (
-            "MONOTONIC_IMPROVEMENT"
-            if (
-                delta_j > 1e-6
-                or consolidation["healed_frontmatter"]
-                or consolidation["healed_orphans"]
-                or consolidation["distilled_entries"] > 0
-            )
-            else "FIXED_POINT_CONVERGED"
+        has_consolidation_progress = (
+            bool(consolidation.get("healed_frontmatter"))
+            or bool(consolidation.get("healed_orphans"))
+            or int(consolidation.get("distilled_entries") or 0) > 0
         )
+        if delta_j > 1e-6:
+            status = "MONOTONIC_IMPROVEMENT"
+        elif delta_j >= -1e-6 and has_consolidation_progress:
+            status = "NON_REGRESSION_CONSOLIDATION"
+        elif delta_j < -1e-6 and has_consolidation_progress:
+            status = "TOLERATED_CONSOLIDATION"
+        else:
+            status = "FIXED_POINT_CONVERGED"
 
     # Loop 4 — Soar Explanation-Based Chunking & 0-Impasse Verification targeting live misses first
     from sovereign_kb.soar import resolve_retrieval_tie_with_soar
@@ -1158,11 +1161,13 @@ def run_rsi_cycle(
     )
     soar_chunk_rep["retrieval_candidates_count"] = len(live_cands)
 
+    is_strictly_monotonic = bool((not regressed) and (delta_j >= -1e-6) and (heldout_delta_j >= -1e-6))
+
     ledger_entry = append_rsi_ledger(
         vault_dir,
         {
             "status": status,
-            "lyapunov_monotonic": not regressed,
+            "lyapunov_monotonic": is_strictly_monotonic,
             "j_before": before_eval["objective_j"],
             "j_after": after_eval["objective_j"],
             "delta_j": delta_j,
@@ -1201,7 +1206,7 @@ def run_rsi_cycle(
         "status": status,
         "timestamp": ledger_entry["timestamp"],
         "vault_dir": str(vault_dir),
-        "lyapunov_monotonic": not regressed,
+        "lyapunov_monotonic": is_strictly_monotonic,
         "before": before_eval,
         "after": after_eval,
         "heldout_before": before_heldout,
