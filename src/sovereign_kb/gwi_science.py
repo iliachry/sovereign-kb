@@ -470,14 +470,307 @@ _TEST_RUNNER_RE = re.compile(
     r"smoke_test|run_tests?\b|verify_sim\.py|\bhypothesis\b|\bdotnet\s+test\b|\bmvn\s+test\b|\bgradle\w*\s+test\b|"
     r"Unity[^\n]*-runTests"
 )
+_KB_VERIFY_RUNNER_RE = re.compile(
+    r"^\s*(?:(?:uv\s+run|python3?(?:\.\d+)?)\s+)*(?:\S*/)?(?:kb|skb|sovereign-kb|kb_cli\.py)"
+    r"(?:\s+(?:--vault(?:\s+\S+|=\S+)|--(?:json|heal|strict|no-embed|allow-lexical-only|require-embeddings)))*"
+    r"\s+verify(?=\s|$)",
+    re.MULTILINE,
+)
 _NPM_RUN_RE = re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([A-Za-z0-9:_.-]+)")
 _MAKE_CALL_RE = re.compile(r"\bmake\s+(?:-[A-Za-z]+\s+)*([A-Za-z0-9_.-]+)")
 _SH_CALL_RE = re.compile(r"(?:bash|sh|\./|\$ROOT_DIR/|\$\{ROOT_DIR\}/)\s*([A-Za-z0-9_./-]+\.sh)\b")
 _EXISTENCE_ONLY_RE = re.compile(r"^\s*(?:test\s+-[fesd]|\[\s+-[fesd]|\[\[\s+-[fesd]|ls\s)", re.MULTILINE)
+_NON_RUNNER_CMDS = frozenset(
+    {
+        "echo",
+        "printf",
+        "true",
+        "false",
+        ":",
+        "export",
+        "unset",
+        "readonly",
+        "local",
+        "declare",
+        "typeset",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "cat",
+        "head",
+        "tail",
+        "sed",
+        "awk",
+        "test",
+        "[",
+        "[[",
+        "ls",
+        "rm",
+        "cp",
+        "mv",
+        "mkdir",
+        "chmod",
+        "chown",
+        "touch",
+        "sleep",
+        "cd",
+        "pwd",
+        "wc",
+        "sort",
+        "uniq",
+        "tr",
+        "cut",
+        "find",
+    }
+)
+_HELP_VERSION_FLAGS = frozenset({"--help", "-h", "--version", "-V", "--collect-only"})
+_SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "do", "time", "exec", "env", "command", "nohup", "!"})
+
+
+def _parse_heredoc_delim(s: str) -> tuple[bool, str, int] | None:
+    if not s.startswith("<<") or s.startswith("<<<"):
+        return None
+    strip_tabs = s.startswith("<<-")
+    j = 3 if strip_tabs else 2
+    n = len(s)
+    while j < n and s[j] in " \t":
+        j += 1
+    delim_chars: list[str] = []
+    saw_quote = False
+    in_s = False
+    in_d = False
+    esc = False
+    while j < n:
+        c = s[j]
+        if esc:
+            delim_chars.append(c)
+            esc = False
+            j += 1
+            continue
+        if c == "\\" and not in_s:
+            if j + 1 < n and s[j + 1] == "\n":
+                j += 2
+                continue
+            if not in_d or (j + 1 < n and s[j + 1] in '"\\$`'):
+                esc = True
+                j += 1
+                continue
+        if c == "'" and not in_d:
+            in_s = not in_s
+            saw_quote = True
+            j += 1
+            continue
+        if c == '"' and not in_s:
+            in_d = not in_d
+            saw_quote = True
+            j += 1
+            continue
+        if not in_s and not in_d and c in " \t\n\r;&|<>()":
+            break
+        delim_chars.append(c)
+        j += 1
+    if not delim_chars and not saw_quote:
+        return None
+    return strip_tabs, "".join(delim_chars), j
+
+
+def _split_unquoted_shell_clauses(text: str) -> list[str]:
+    clauses: list[str] = []
+    buf: list[str] = []
+    pending_heredocs: list[tuple[bool, str]] = []
+    in_single = False
+    in_double = False
+    escaped = False
+    arith_depth = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\" and not in_single:
+            if i + 1 < n and text[i + 1] == "\n":
+                i += 2
+                continue
+            if not in_double or (i + 1 < n and text[i + 1] in '"\\$`\n'):
+                buf.append(ch)
+                escaped = True
+                i += 1
+                continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            buf.append(ch)
+            i += 1
+            continue
+        if not in_single and not in_double:
+            if ch == "#" and (i == 0 or text[i - 1] in " \t\n\r;|&()"):
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if arith_depth == 0 and text[i : i + 2] == "((":
+                arith_depth = 2
+                buf.append("((")
+                i += 2
+                continue
+            if arith_depth > 0 and ch == "(":
+                arith_depth += 1
+                buf.append("(")
+                i += 1
+                continue
+            if arith_depth > 0 and ch == ")":
+                arith_depth -= 1
+                buf.append(")")
+                i += 1
+                continue
+            if text[i : i + 3] == "<<<":
+                buf.append("<<<")
+                i += 3
+                continue
+            if text[i : i + 2] == "<<" and arith_depth == 0:
+                hd = _parse_heredoc_delim(text[i:])
+                if hd is not None:
+                    strip_tabs, delim, adv = hd
+                    pending_heredocs.append((strip_tabs, delim))
+                    i += adv
+                    continue
+            if text[i : i + 2] in ("&&", "||"):
+                clauses.append("".join(buf).strip())
+                buf = []
+                i += 2
+                continue
+            if ch in (";", "|"):
+                clauses.append("".join(buf).strip())
+                buf = []
+                i += 1
+                continue
+            if ch in ("\n", "\r"):
+                clauses.append("".join(buf).strip())
+                buf = []
+                if ch == "\r" and i + 1 < n and text[i + 1] == "\n":
+                    i += 2
+                else:
+                    i += 1
+                if pending_heredocs:
+                    for strip_tabs, delim in pending_heredocs:
+                        while i < n:
+                            nl_idx = text.find("\n", i)
+                            if nl_idx == -1:
+                                line_str = text[i:]
+                                i = n
+                            else:
+                                line_str = text[i:nl_idx]
+                                i = nl_idx + 1
+                            chk = line_str.lstrip("\t") if strip_tabs else line_str
+                            if chk.rstrip("\r") == delim:
+                                break
+                    pending_heredocs.clear()
+                continue
+        buf.append(ch)
+        i += 1
+    if buf:
+        clauses.append("".join(buf).strip())
+    return [c for c in clauses if c]
+
+
+def _tokenize_shell_clause(clause: str) -> list[tuple[str, bool, bool]]:
+    """Return list of (token_text, had_quotes, unquoted_assign_prefix)."""
+    tokens: list[tuple[str, bool, bool]] = []
+    cur: list[str] = []
+    was_quoted = False
+    unquoted_prefix: list[str] = []
+    saw_quote_yet = False
+    in_single = False
+    in_double = False
+    escaped = False
+    for idx_ch, ch in enumerate(clause):
+        if escaped:
+            if ch != "\n":
+                cur.append(ch)
+                if not saw_quote_yet:
+                    unquoted_prefix.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and not in_single:
+            if not in_double or (idx_ch + 1 < len(clause) and clause[idx_ch + 1] in '"\\$`\n'):
+                escaped = True
+                continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            was_quoted = True
+            saw_quote_yet = True
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            was_quoted = True
+            saw_quote_yet = True
+            continue
+        if not in_single and not in_double and ch in " \t\n\r":
+            if cur or was_quoted:
+                up = "".join(unquoted_prefix)
+                is_assign = bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", up))
+                tokens.append(("".join(cur), was_quoted, is_assign))
+                cur = []
+                unquoted_prefix = []
+                was_quoted = False
+                saw_quote_yet = False
+            continue
+        cur.append(ch)
+        if not saw_quote_yet:
+            unquoted_prefix.append(ch)
+    if cur or was_quoted:
+        up = "".join(unquoted_prefix)
+        is_assign = bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", up))
+        tokens.append(("".join(cur), was_quoted, is_assign))
+    return tokens
 
 
 def _strip_sh_comments(text: str) -> str:
-    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    clauses: list[str] = []
+    for raw_clause in _split_unquoted_shell_clauses(text):
+        tokens = _tokenize_shell_clause(raw_clause)
+        while tokens:
+            tok, quoted, is_assign = tokens[0]
+            if tok in _SHELL_KEYWORDS and not quoted:
+                tokens.pop(0)
+                continue
+            if is_assign:
+                tokens.pop(0)
+                continue
+            break
+        if not tokens:
+            continue
+        if tokens[0][1] and any(c.isspace() for c in tokens[0][0]):
+            continue
+        first_word = Path(tokens[0][0]).name
+        if first_word in _NON_RUNNER_CMDS:
+            continue
+        if any(tok in _HELP_VERSION_FLAGS for tok, _, _ in tokens[1:]):
+            continue
+        sanitized_words: list[str] = []
+        for idx, (tok, quoted, _) in enumerate(tokens):
+            if quoted and idx > 0:
+                is_safe_script = (
+                    first_word in ("python", "python3", "uv", "bash", "sh", "zsh")
+                    and tok.endswith((".py", ".sh"))
+                    and not any(c.isspace() for c in tok)
+                )
+                if not is_safe_script:
+                    sanitized_words.append("__QUOTED_ARG__")
+                    continue
+            if tok and not any(c in tok for c in "\n\r"):
+                sanitized_words.append(tok)
+        if sanitized_words:
+            clauses.append(" ".join(sanitized_words))
+    return "\n".join(clauses)
 
 
 def _make_targets(makefile: Path) -> dict[str, str]:
@@ -566,6 +859,8 @@ def check_hollow_gate(root: Path, profile: str) -> tuple[list[dict[str, Any]], l
         return findings, passes
 
     runs, unresolved = _gate_runs_tests(root, gate_text)
+    if not runs and profile == "kb" and _KB_VERIFY_RUNNER_RE.search(_strip_sh_comments(gate_text)):
+        runs = True
     if runs:
         passes.append(f"PASS [GWI-SCI-03]: `{gate_label}` executes a test runner")
         return findings, passes

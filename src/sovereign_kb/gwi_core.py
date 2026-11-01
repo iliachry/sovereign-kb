@@ -30,6 +30,7 @@ ARCHETYPE_WEIGHTS: dict[str, tuple[float, float, float, float]] = {
     "sim": (0.25, 0.25, 0.30, 0.20),
     "video": (0.25, 0.25, 0.25, 0.25),
     "paper": (0.20, 0.30, 0.20, 0.30),
+    "kb": (0.25, 0.20, 0.30, 0.25),
     "craftsperson": (0.25, 0.20, 0.35, 0.20),
     "scholar": (0.20, 0.30, 0.20, 0.30),
     "leader": (0.30, 0.15, 0.30, 0.25),

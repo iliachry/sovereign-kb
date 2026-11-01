@@ -108,11 +108,11 @@ def reference_issues(readme: str, files: set[str], dirs: set[str]) -> list[str]:
     return issues
 
 
-def reference_issues_worktree(root: Path) -> list[str]:
+def reference_issues_worktree(root: Path, doc_path: Path | None = None) -> list[str]:
     """Reference check against the working tree (used by the GWI `pv.readme_doc_freshness` probe)."""
-    readme_p = root / "README.md"
+    readme_p = doc_path if doc_path is not None else (root / "README.md")
     if not readme_p.is_file():
-        return ["[ref] README.md missing"]
+        return [f"[ref] {readme_p.name} missing"]
     ls = _git(root, "ls-files") if (root / ".git").exists() else None
     if ls is not None and ls.returncode == 0:
         files = set(ls.stdout.splitlines())

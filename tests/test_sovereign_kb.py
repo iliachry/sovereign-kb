@@ -2408,3 +2408,251 @@ def test_sovereign_audit_registry_subprojects_and_incremental_cache(
     main_cli(["subprojects", str(repo), "--json"])
     sp_out = json.loads(capsys.readouterr().out)
     assert len(sp_out["subprojects"]) == 3
+
+
+def test_gwi_kb_profile_spectral_and_adversarial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify the first-class GWI `kb` profile, Fiedler algebraic connectivity (lambda_2), and adversarial KB gates."""
+    import math
+    import re
+    import sqlite3
+
+    from sovereign_kb.gwi import (
+        compute_graph_fiedler_value,
+        detect_profile,
+        evaluate_kb_profile,
+        evaluate_target,
+    )
+    from sovereign_kb.gwi_science import check_hollow_gate
+
+    monkeypatch.setenv("KB_NO_EMBED", "1")
+
+    # 1. Exact Spectral Graph Laplacian Fiedler value (lambda_2) across canonical and adversarial graphs
+    adj_k4 = [{1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}]
+    assert abs(compute_graph_fiedler_value(4, adj_k4) - (4.0 / 3.0)) < 1e-4
+
+    adj_c6 = [{1, 5}, {0, 2}, {1, 3}, {2, 4}, {3, 5}, {4, 0}]
+    assert abs(compute_graph_fiedler_value(6, adj_c6) - 0.5) < 1e-4
+
+    adj_p100 = [set() for _ in range(100)]
+    for idx_p in range(99):
+        adj_p100[idx_p].add(idx_p + 1)
+        adj_p100[idx_p + 1].add(idx_p)
+    exp_p100 = 1.0 - math.cos(math.pi / 99.0)
+    assert abs(compute_graph_fiedler_value(100, adj_p100) - exp_p100) < 5e-5
+
+    adj_disconnected_islands = [{1}, {0}, {3}, {2}]
+    assert compute_graph_fiedler_value(4, adj_disconnected_islands) == 0.0
+
+    # Irregular-degree hub graphs (wheel W_n: hub deg n, rim deg 3) expose single-pass Gram-Schmidt leakage of the
+    # null vector v_0 back into the Krylov basis; closed form lambda_2(W_n) = min(4/3, 1 - (2/3) cos(2 pi / n)).
+    for n_rim in (20, 120):
+        adj_wheel = [set() for _ in range(n_rim + 1)]
+        for idx_w in range(1, n_rim + 1):
+            adj_wheel[0].add(idx_w)
+            adj_wheel[idx_w].add(0)
+            nxt_w = 1 + (idx_w % n_rim)
+            adj_wheel[idx_w].add(nxt_w)
+            adj_wheel[nxt_w].add(idx_w)
+        exp_wheel = min(4.0 / 3.0, 1.0 - (2.0 / 3.0) * math.cos(2.0 * math.pi / n_rim))
+        assert abs(compute_graph_fiedler_value(n_rim + 1, adj_wheel) - exp_wheel) < 5e-5
+
+    # Barbell 2xK_250 connected by a single bridge (0..249 and 250..499): extreme spectral bottleneck (lambda_2 ~ 3.187e-5)
+    adj_barbell = [set() for _ in range(500)]
+    for idx_b in range(250):
+        for jdx_b in range(idx_b + 1, 250):
+            adj_barbell[idx_b].add(jdx_b)
+            adj_barbell[jdx_b].add(idx_b)
+            adj_barbell[250 + idx_b].add(250 + jdx_b)
+            adj_barbell[250 + jdx_b].add(250 + idx_b)
+    adj_barbell[249].add(250)
+    adj_barbell[250].add(249)
+    lam_barbell = compute_graph_fiedler_value(500, adj_barbell)
+    assert abs(lam_barbell - 0.000031874025771) < 1e-6
+
+    # 2. Initialize a sovereign vault (with `#` in folder name to test SQLite URI escaping)
+    vault = tmp_path / "sovereign#vault"
+    main(["init", str(vault), "--full", "--no-embed"])
+    capsys.readouterr()
+
+    # Auto-detection must select the `kb` profile, and no sibling `sovereign` file is created by URI parsing
+    assert detect_profile(vault) == "kb"
+
+    rep_clean = evaluate_target(vault, profile="auto", strict_lenses=True)
+    assert not (tmp_path / "sovereign").exists()
+    assert rep_clean["profile"] == "kb"
+    assert rep_clean["calculation"]["status"] == "PASS", f"Expected PASS, got blockers={rep_clean['blockers']}"
+    assert rep_clean["calculation"]["conscience_lambda"] == 1
+    assert rep_clean["calculation"]["goldwood_g"] >= 9.0
+    assert rep_clean["craft_lenses"]["veto_triggered"] is False
+    assert rep_clean["craft_lenses"]["coupled_goldwood_g"] >= 9.0
+
+    # 3. Adversarial Case A: Disconnected 2-node cycle (island A <-> B with inbound > 0, but LCC < 1.0 & lambda_2 == 0)
+    island_a = vault / "03-life-domains" / "island-a.md"
+    island_b = vault / "03-life-domains" / "island-b.md"
+    island_a.write_text(
+        '---\ntitle: "Island A"\ntype: domain\nupdated: 2026-11-01\ntags: [island]\nrelated:\n  - "[[03-life-domains/island-b]]"\n---\n\n'
+        "# Island A\nConnected only to [[03-life-domains/island-b]] in an isolated 2-node cycle with sufficient words "
+        + ("epistemic topology invariant " * 15)
+        + "\n",
+        encoding="utf-8",
+    )
+    island_b.write_text(
+        '---\ntitle: "Island B"\ntype: domain\nupdated: 2026-11-01\ntags: [island]\nrelated:\n  - "[[03-life-domains/island-a]]"\n---\n\n'
+        "# Island B\nConnected only to [[03-life-domains/island-a]] in an isolated 2-node cycle with sufficient words "
+        + ("epistemic topology invariant " * 15)
+        + "\n",
+        encoding="utf-8",
+    )
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+    rep_island = evaluate_kb_profile(vault)
+    blocker_ids_island = {b["id"] for b in rep_island["blockers"]}
+    assert "GWI-KB-A03" in blocker_ids_island
+    d_topo = next(d for d in rep_island["dimensions"] if d["id"] == "D_topo")
+    assert d_topo["score"] <= 6.5
+    assert rep_island["calculation"]["status"] == "FAIL"
+    island_a.unlink()
+    island_b.unlink()
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+
+    # 4. Adversarial Case B: Missing explicit `type:`, invalid date `2026-99-99`, empty body stub, and info-bearing closing fence
+    bad_schema_stub = vault / "03-life-domains" / "empty-stub.md"
+    bad_schema_stub.write_text(
+        '---\ntitle: "Stub Note"\nupdated: 2026-99-99\ntags: [stub]\n---\n',
+        encoding="utf-8",
+    )
+    bad_fence_note = vault / "03-life-domains" / "corrupt-note.md"
+    bad_fence_note.write_text(
+        "# Note Without Frontmatter\n"
+        "Broken reference to [[03-life-domains/ghost-target]] and odd math:\n"
+        "$$\nE = mc^2\n"
+        "```python\ndef unclosed():\n    pass\n```python\n",
+        encoding="utf-8",
+    )
+    rep_bad = evaluate_target(vault, profile="kb", strict_lenses=True)
+    bad_ids = {b["id"] for b in rep_bad["blockers"]}
+    assert "GWI-KB-S01" in bad_ids
+    assert "GWI-KB-A01" in bad_ids
+    assert "GWI-KB-P01" in bad_ids
+    assert "GWI-KB-P02" in bad_ids
+    assert "GWI-KB-P03" in bad_ids
+    assert rep_bad["calculation"]["conscience_lambda"] == 0
+    assert rep_bad["calculation"]["goldwood_g"] == 0.0
+    assert rep_bad["craft_lenses"]["veto_triggered"] is True
+    bad_schema_stub.unlink()
+    bad_fence_note.unlink()
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+
+    # 5. Adversarial Case C: Corrupt FTS segment BLOBs (`zeroblob`) and missing docsize rows trigger `GWI-KB-S04` & `Gate 4`, and plain `sync` repairs both
+    conn = sqlite3.connect(str(vault / ".kb" / "index.db"))
+    conn.execute("UPDATE chunks_fts_data SET block = zeroblob(32) WHERE id > 1")
+    conn.commit()
+    conn.close()
+    rep_corrupt_fts = evaluate_kb_profile(vault)
+    assert any(b["id"] == "GWI-KB-S04" for b in rep_corrupt_fts["blockers"])
+    with pytest.raises(SystemExit):
+        main(["--vault", str(vault), "verify", "--json", "--allow-lexical-only"])
+    verify_out = json.loads(capsys.readouterr().out)
+    assert any(v["gate"] == "Gate 4 (FTS5 Integrity)" for v in verify_out["violations"])
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+    assert evaluate_kb_profile(vault)["calculation"]["status"] == "PASS"
+
+    conn = sqlite3.connect(str(vault / ".kb" / "index.db"))
+    conn.execute("DELETE FROM chunks_fts_docsize")
+    conn.commit()
+    conn.close()
+    with pytest.raises(SystemExit):
+        main(["--vault", str(vault), "verify", "--json", "--allow-lexical-only"])
+    verify_out2 = json.loads(capsys.readouterr().out)
+    assert any(v["gate"] == "Gate 4 (FTS5 Integrity)" for v in verify_out2["violations"])
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+
+    now_note = vault / "01-now" / "now.md"
+    orig_now = now_note.read_text(encoding="utf-8")
+    now_note.write_text(orig_now + "\nUnsynced edit token xyzzy987.\n", encoding="utf-8")
+    rep_stale = evaluate_kb_profile(vault)
+    assert any(b["id"] == "GWI-KB-S04" for b in rep_stale["blockers"])
+    now_note.write_text(orig_now, encoding="utf-8")
+
+    # Blanking `documents.content` in SQLite while preserving mtime must NOT bypass exact content sync
+    conn = sqlite3.connect(str(vault / ".kb" / "index.db"))
+    conn.execute("UPDATE documents SET content = '' WHERE rel_path = '01-now/now.md'")
+    conn.commit()
+    conn.close()
+    rep_blank_content = evaluate_kb_profile(vault)
+    assert any(b["id"] == "GWI-KB-S04" for b in rep_blank_content["blockers"])
+    main(["--vault", str(vault), "sync", "--force", "--no-embed"])
+    capsys.readouterr()
+
+    # Bare `type:` without value must trigger `GWI-KB-S01` (not masked by parser default)
+    now_note.write_text(re.sub(r"(?m)^type\s*:.*$", "type:", orig_now), encoding="utf-8")
+    rep_blank_type = evaluate_kb_profile(vault)
+    assert any(b["id"] == "GWI-KB-S01" for b in rep_blank_type["blockers"])
+
+    # Decomposed Unicode (NFD `nai\u0308ve`) heading must pass both CLI `verify` and `evaluate_kb_profile`
+    now_note.write_text(orig_now + "\n## nai\u0308ve\nDecomposed Unicode token test.\n", encoding="utf-8")
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+    main(["--vault", str(vault), "verify", "--json", "--allow-lexical-only"])
+    nfd_verify = json.loads(capsys.readouterr().out)
+    assert nfd_verify["status"] == "PASS"
+    assert evaluate_kb_profile(vault)["calculation"]["status"] == "PASS"
+    now_note.write_text(orig_now, encoding="utf-8")
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+
+    # 6. Adversarial Case D: Invalid UTF-8 bytes in `.kb/rsi-ledger.jsonl` gracefully emit `GWI-KB-E01`
+    rsi_file = vault / ".kb" / "rsi-ledger.jsonl"
+    rsi_file.write_bytes(b"\xff\xfe\x00\x81corrupt-utf8\n")
+    rep_rsi = evaluate_kb_profile(vault)
+    assert any(b["id"] == "GWI-KB-E01" for b in rep_rsi["blockers"])
+    assert rep_rsi["calculation"]["conscience_lambda"] == 0
+
+    # 7. Adversarial Case E: `kb verify` does NOT satisfy `GWI-SCI-03` for `app` profile, and quoted/indented `echo`/`printf`/inline comments fail
+    gate_dir = tmp_path / "gate-test"
+    (gate_dir / "scripts").mkdir(parents=True)
+    (gate_dir / "pyproject.toml").write_text('[project]\nname="x"\n[tool.pytest.ini_options]\n', encoding="utf-8")
+    (gate_dir / "scripts" / "quality_gate.sh").write_text("#!/bin/sh\nkb verify\n", encoding="utf-8")
+    f_app, _ = check_hollow_gate(gate_dir, "app")
+    assert any(f["id"] == "GWI-SCI-03" for f in f_app)
+    f_kb, _ = check_hollow_gate(gate_dir, "kb")
+    assert not f_kb
+    for valid_body in (
+        '#!/bin/sh\nkb --vault "$ROOT" verify\n',
+        '#!/bin/sh\nread -r v <<< "$y"\nkb verify\n',
+        "#!/bin/sh\nx=$((1<<3))\nkb verify\n",
+    ):
+        (gate_dir / "scripts" / "quality_gate.sh").write_text(valid_body, encoding="utf-8")
+        f_kb_valid, _ = check_hollow_gate(gate_dir, "kb")
+        assert not f_kb_valid
+    for hollow_body in (
+        '#!/bin/sh\n  echo "kb verify"\n',
+        '#!/bin/sh\n  echo "status; kb verify"\n',
+        '#!/bin/sh\n  printf "%s\\n" "kb verify"\n',
+        '#!/bin/sh\n  printf "%s\\n" "status; pytest"\n',
+        "#!/bin/sh\nprintf '%s\\n' 'status\nkb verify\n'\n",
+        "#!/bin/sh\ncat <<EOF\nkb verify\nEOF\n",
+        "#!/bin/sh\ncat <<'123'\nkb verify\n123\n",
+        "#!/bin/sh\ncat <<'E'OF\nE\nkb verify\nEOF\n",
+        '#!/bin/sh\ncat <<"E\\OF"\nEOF\nkb verify\nE\\OF\n',
+        "#!/bin/sh\nx=$((1 + ((2) + 3)))\ncat <<EOF\nkb verify\nEOF\n",
+        "#!/bin/sh\ncat <<EOF <<END\nfirst\nEOF\nkb verify\nEND\n",
+        '#!/bin/sh\npython "status\nkb verify\nx.py"\n',
+        '#!/bin/sh\nbash "status\nkb verify\nx.sh"\n',
+        '#!/bin/sh\n  FLAG="two words" echo "kb verify"\n',
+        '#!/bin/sh\n  grep "#kb verify" file.txt\n',
+        "#!/bin/sh\n  kb verify --help\n",
+        "#!/bin/sh\n  kb verify-not-a-command\n",
+        "#!/bin/sh\n  kb --vault verify\n",
+        "#!/bin/sh\ntrue # kb verify\n",
+        '#!/bin/sh\n  echo "pytest"\n',
+    ):
+        (gate_dir / "scripts" / "quality_gate.sh").write_text(hollow_body, encoding="utf-8")
+        f_kb_hollow, _ = check_hollow_gate(gate_dir, "kb")
+        assert any(f["id"] == "GWI-SCI-03" for f in f_kb_hollow)

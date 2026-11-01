@@ -953,7 +953,10 @@ def verify_ledger_chain(vault_dir: Path) -> tuple[bool, int]:
     lp = ledger_path(vault_dir)
     if not lp.is_file():
         return True, 0
-    raw_lines = [ln.strip() for ln in lp.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    try:
+        raw_lines = [ln.strip() for ln in lp.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    except (UnicodeDecodeError, OSError):
+        return False, 0
     prev = "0" * 64
     for ln in raw_lines:
         try:

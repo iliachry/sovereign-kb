@@ -837,6 +837,31 @@ def cmd_init(args) -> None:
     cmd_sync(sync_args)
 
 
+def _verify_fts_index(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("INSERT INTO chunks_fts(chunks_fts, rank) VALUES('integrity-check', 1)")
+    except sqlite3.OperationalError:
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('integrity-check')")
+    c_cnt = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+    f_cnt = int(conn.execute("SELECT COUNT(*) FROM chunks_fts_docsize").fetchone()[0])
+    if c_cnt != f_cnt:
+        raise sqlite3.DatabaseError(f"chunks_fts_docsize count ({f_cnt}) != chunks count ({c_cnt})")
+    if c_cnt > 0:
+        d_cnt = int(conn.execute("SELECT COUNT(*) FROM chunks_fts_data").fetchone()[0])
+        if d_cnt < 2:
+            raise sqlite3.DatabaseError(f"chunks_fts_data has only {d_cnt} row(s) for {c_cnt} chunk(s)")
+        for cid, ctext in conn.execute("SELECT id, content FROM chunks").fetchall():
+            folded_probe = fold_accents(str(ctext or ""))
+            m_tok = re.search(r"(?<![\w])(?!(?:AND|OR|NOT|NEAR)(?![\w]))[A-Za-z0-9]{3,}(?![\w])", folded_probe)
+            if m_tok:
+                hit = conn.execute(
+                    "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ? AND rowid = ?",
+                    (f'"{m_tok.group(0)}"', int(cid)),
+                ).fetchone()
+                if hit is None:
+                    raise sqlite3.DatabaseError(f"chunks_fts MATCH failed for chunk rowid={cid}")
+
+
 def cmd_sync(args) -> None:
     vault_dir = resolve_vault_dir(getattr(args, "vault", None))
     if getattr(args, "no_embed", False) and getattr(args, "persist_no_embed", False):
@@ -876,6 +901,18 @@ def cmd_sync(args) -> None:
         pass
 
     seen_paths: set[str] = set()
+
+    try:
+        if getattr(args, "force", False):
+            raise sqlite3.DatabaseError("force rebuild")
+        _verify_fts_index(conn)
+    except sqlite3.DatabaseError:
+        with contextlib.suppress(sqlite3.DatabaseError):
+            conn.rollback()
+        conn.executescript("DROP TABLE IF EXISTS chunks_fts;")
+        _create_tables(conn)
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+        conn.commit()
 
     for path in md_files:
         rel_path = str(path.relative_to(vault_dir))
@@ -917,8 +954,14 @@ def cmd_sync(args) -> None:
                 temp_vec_cache[(rel_path, sha)] = blob_emb
 
         old_ids = [r["id"] for r in conn.execute("SELECT id FROM chunks WHERE rel_path = ?", (rel_path,))]
-        for cid in old_ids:
-            conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (cid,))
+        try:
+            for cid in old_ids:
+                conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (cid,))
+        except sqlite3.DatabaseError:
+            conn.commit()
+            conn.executescript("DROP TABLE IF EXISTS chunks_fts;")
+            _create_tables(conn)
+            conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
         conn.execute("DELETE FROM chunks WHERE rel_path = ?", (rel_path,))
         conn.execute("DELETE FROM links WHERE source_path = ?", (rel_path,))
 
@@ -967,7 +1010,20 @@ def cmd_sync(args) -> None:
                 INSERT INTO chunks (rel_path, title, doc_type, tags, heading, heading_path, start_line, end_line, content, folded_content, is_vector_eligible, embedding)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (rel_path, title, doc_type, tags, heading, heading_path, start_line, end_line, chunk_body, folded_body, vec_eligible, vec_blob),
+                (
+                    rel_path,
+                    title,
+                    doc_type,
+                    tags,
+                    heading,
+                    heading_path,
+                    start_line,
+                    end_line,
+                    chunk_body,
+                    folded_body,
+                    vec_eligible,
+                    vec_blob,
+                ),
             )
             rowid = cur.lastrowid
             conn.execute(
@@ -1334,7 +1390,16 @@ def hybrid_retrieve(
 
         if score > 0:
             doc_t = str(doc_meta.get(c["rel_path"], {}).get("doc_type", "")).lower()
-            if doc_t in ("identity", "operating-system", "now", "venture", "research", "life-domain", "moc", "decision"):
+            if doc_t in (
+                "identity",
+                "operating-system",
+                "now",
+                "venture",
+                "research",
+                "life-domain",
+                "moc",
+                "decision",
+            ):
                 score *= 1.20
             elif doc_t in ("rsi-ledger", "distillation-ledger") or (
                 c["rel_path"] == "02-operating-system/autonomous-rsi-distillations.md"
@@ -1834,7 +1899,9 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
     doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
     eligible_vec_count = conn.execute("SELECT COUNT(*) FROM chunks WHERE is_vector_eligible = 1").fetchone()[0]
-    vec_count = conn.execute("SELECT COUNT(*) FROM chunks WHERE is_vector_eligible = 1 AND embedding IS NOT NULL").fetchone()[0]
+    vec_count = conn.execute(
+        "SELECT COUNT(*) FROM chunks WHERE is_vector_eligible = 1 AND embedding IS NOT NULL"
+    ).fetchone()[0]
     hips_idx_dir = vault_dir / ".kb" / "hips-index"
     hips_ready = hips_idx_dir.is_dir() and any(hips_idx_dir.iterdir())
     require_embed = getattr(args, "require_embeddings", False)
@@ -1866,9 +1933,9 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
                 }
             )
     try:
-        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('integrity-check');")
+        _verify_fts_index(conn)
         conn.commit()
-    except sqlite3.OperationalError as e:
+    except sqlite3.DatabaseError as e:
         violations.append({"gate": "Gate 4 (FTS5 Integrity)", "file": ".kb/index.db", "issue": str(e)})
 
     if (vault_dir / ".kb" / "rsi-ledger.jsonl").is_file():

@@ -13,18 +13,25 @@ $$\mathcal{G}(\mathbf{S}) = \left( \sum_{i=1}^4 \alpha_i \mathcal{S}_i \right) \
 
 ---
 
-## 1. The 4 Domain Evaluation Profiles & 8 Bi-Polar Specialist Craft Lenses (4 *Verga* + 4 *Chrysos*)
+## 1. The 5 Domain Evaluation Profiles (`app`, `sim`, `video`, `paper`, `kb`) & 8 Bi-Polar Specialist Craft Lenses (4 *Verga* + 4 *Chrysos*)
 
 | Lens ID | Pole & Profiles | Primary Deterministic Artifact Probes (`src/sovereign_kb/gwi.py`) | Hard Veto Threshold | Required Contact Sheet / Evidence |
 | :--- | :--- | :--- | :--- | :--- |
 | **`technical-artist`** | *Verga* (`app` 3D, `sim`) | `renderer.info` (`draws <= 180`), frame `p95 <= 16.6ms`, KTX2/Draco compression, camera $\notin$ mesh AABB, Rec.709 luminance ($\mu_Y \in [18, 215], \sigma_Y \ge 14$), Sobel edge & 6-tile MSE | `draws > 300`, `p95 > 33.3ms`, black/blown canvas, or unseeded `Math.random()` | 6-Pose Canonical Orbit Sheet (`1920x1080`) |
 | **`ux-ergonomics`** | *Verga* (`app`, `sim` HUD) | 2D HUD $\cap$ 3D canvas occlusion ($\le 18\%$), linearized WCAG 2.1 contrast ($\ge 4.5:1$), `0px` horizontal overflow across `390/768/1440px`, and **Subtractive Laws (`L0`–`L8`)** | HUD occlusion $> 25\%$, contrast $< 4.5:1$, `headerRows > 1`, `expandedTablesVisible > 1`, `controls > 36` ($S_{L8}$), or `edge_density > 0.36` | 3-Viewport Responsive Sheet (`390` / `768` / `1440px`) |
 | **`spatial-cinema`** | *Verga* (`video`, `app`/`sim` Audio) | `ffmpeg -af ebur128` (`I` $\in [-16, -13]\text{ LUFS}$, `TP` $\le -1.0\text{ dBTP}$, `LRA` $\ge 2.0\text{ LU}$), `.srt` reading speed ($\text{CPS} \le 20$), 9-Frame tile MSE $\ge 25.0$, companion `<20MB` MP4 (`sc.companion_size`) | Silent/clipped audio, flat sine drone (`LRA < 0.2`), `.srt` overlap / $\text{CPS} > 28$, frozen frames, or missing `<20MB` companion MP4 | 9-Frame Shot Sequence + Waveform Strip |
-| **`typography-editor`** | *Verga* (`paper`) | LaTeX `.log` `Overfull \hbox <= 3.0pt`, `0` undefined refs/citations, `0` raw Markdown leakage (`**bold**`), Poppler `pdffonts` (`0` Type-3 bitmap fonts), `pdfimages >= 200 PPI` | `Overfull \hbox > 10pt`, undefined citation, leaked `**bold**`, any `Type 3` bitmap font, or `< 120 PPI` figure | 12-Page-per-Sheet Thumbnail Grid |
+| **`typography-editor`** | *Verga* (`paper`, `kb`) | LaTeX `.log` `Overfull \hbox <= 3.0pt`, `0` undefined refs/citations, `0` raw Markdown leakage (`**bold**`), Poppler `pdffonts` (`0` Type-3 bitmap fonts), `pdfimages >= 200 PPI`; for `kb` (`ty.kb_prose_math_poise`): KaTeX `$$` & fenced-code parity, `[[wikilink]]` closure, and Fiedler connectivity $\lambda_2(L_{\text{sym}}) > 0$ | `Overfull \hbox > 10pt`, undefined citation, leaked `**bold**`, any `Type 3` bitmap font, `< 120 PPI` figure, unclosed fence/`$$`, broken `[[wikilink]]`, or disconnected island ($\lambda_2 = 0$) | 12-Page-per-Sheet Thumbnail Grid / Knowledge Graph Topology |
 | **`web-perf-edge`** | *Chrysos* | `wp.barrel_waterfalls` (no wildcard icon-library imports), `wp.listener_memory_hygiene`, `wp.edge_bundle_budget` ($\le 2.5\text{ MB}$) | Barrel `import * as` from `lucide-react` / `@mui/icons-material` / `@heroicons/react` | — |
 | **`data-api-architect`** | *Chrysos* | `da.destructive_sql_guard` (no unguarded `DROP`/`DELETE`), `da.rls_index_hygiene`, `da.api_contract_schema` | Unguarded `DELETE FROM x;` or `DISABLE ROW LEVEL SECURITY` | — |
 | **`ai-ml-science`** | *Chrysos* | `ai.deterministic_seeds` (no legacy `google.generativeai`), `ai.gx10_cluster_guard`, `ai.reproducible_artifacts` | Legacy `google.generativeai` import or unconfirmed cluster service stop/restart | — |
 | **`principal-verification`** | *Chrysos* (all profiles) | `pv.lockfile_reproducibility`, `pv.secret_hygiene`, `pv.skill_manifest_binding`, `pv.canonical_anchor_l9` (Law `L9`), `pv.readme_doc_freshness` | Leaked token, missing `SKILL.md`, unanchored sprawl repo, or broken `README.md` paths/commands | `AGENTS.md` skill matrix |
+
+### Knowledge Base Profile (`--profile kb`, Weights $\alpha = (0.25, 0.20, 0.30, 0.25)$)
+Auto-selected whenever a target contains `.kb/index.db` or sovereign taxonomy directories (`00-identity/`, `01-now/`, `02-operating-system/`, `03-life-domains/`, `04-episodic/`):
+- **Tier I ($\mathcal{S}_{\text{sub}}$ / *Firmitas* — $w = 0.25$)**: `F_schema` ($0.15$: YAML frontmatter `title`, `type`, `updated`, `tags`, `related`) and `S_index` ($0.10$: read-only SQLite FTS5 + HIPS WAND + vector sync, `0` Git conflict markers, `0` tracked binary bloat).
+- **Tier II ($\mathcal{S}_{\text{perc}}$ / *Venustas* — $w = 0.20$)**: `V_prose` ($0.10$: balanced CommonMark triple-backtick fences, even `$$` KaTeX delimiters, `0` `TODO`/`FIXME`/`TBD` stubs) and `A_struct` ($0.10$: heading hierarchy and non-stub body exposition $\ge 20$ prose words outside frontmatter and code fences).
+- **Tier III ($\mathcal{S}_{\text{act}}$ / *Utilitas* — $w = 0.30$)**: `U_links` ($0.15$: 100% `[[wikilink]]` resolution and average degree) and `D_topo` ($0.15$: 100% Largest Connected Component $\text{LCC} = 1.0$, 2-hop hub reachability from `INDEX.md`, and positive normalized Laplacian Fiedler algebraic connectivity $\lambda_2(L_{\text{sym}}) > 0$ catching isolated cycles).
+- **Tier IV ($\mathcal{S}_{\text{exist}}$ / *Syneidesis* — $w = 0.25$)**: `B_tier0` ($0.15$: Tier-0 taxonomy completeness, dated episodic logs, and `.kb/rsi-ledger.jsonl` SHA-256 hash chain) and `R_prov` ($0.10$: secret hygiene and `SKILL.md` manifest integrity).
 
 ---
 
