@@ -40,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -6483,6 +6484,208 @@ def evaluate_craft_lenses(
     }
 
 
+def _compute_worktree_content_sha(root: Path) -> str:
+    """Compute a content SHA over all git-tracked files plus scripts, source, tests, and manifests."""
+    hasher = hashlib.sha256()
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    try:
+        ls_proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if ls_proc.returncode == 0:
+            for rel_s in ls_proc.stdout.split("\0"):
+                if not rel_s:
+                    continue
+                p_tr = root / rel_s
+                if (
+                    p_tr.is_file()
+                    and p_tr.name not in ("goldwood.json", "gate_receipt.json", "passport.yaml")
+                    and p_tr not in seen
+                ):
+                    seen.add(p_tr)
+                    candidates.append(p_tr)
+    except Exception:
+        pass
+
+    patterns = (
+        "scripts/**/*",
+        "src/**/*.py",
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "src/**/*.js",
+        "src/**/*.rs",
+        "tests/**/*",
+        "pyproject.toml",
+        "package.json",
+        "Cargo.toml",
+        "README.md",
+    )
+    for pat in patterns:
+        for p in sorted(root.glob(pat)):
+            if not p.is_file() or p in seen or "__pycache__" in p.parts:
+                continue
+            seen.add(p)
+            candidates.append(p)
+    candidates.sort(key=lambda p: str(p))
+    for p in candidates:
+        try:
+            rel = str(p.relative_to(root))
+            hasher.update(rel.encode("utf-8"))
+            hasher.update(p.read_bytes())
+        except OSError:
+            pass
+    return hasher.hexdigest()[:16]
+
+
+def execute_or_verify_gate_receipt(target_dir: Path, execute_gate: bool = False) -> dict[str, Any]:
+    """Run or validate a tree-hash-bound and worktree-content-bound behavioral gate receipt (`evidence/gate_receipt.json`)."""
+    from .audit_registry import compute_subproject_fingerprint, find_git_root
+
+    root = target_dir if target_dir.is_dir() else target_dir.parent
+    git_root = find_git_root(root)
+    try:
+        subpath = str(root.relative_to(git_root)) if root != git_root else "."
+    except ValueError:
+        subpath = "."
+    fp = compute_subproject_fingerprint(git_root, subpath)
+    tree_sha = str(fp.get("tree_sha") or "unknown")
+    is_dirty = bool(fp.get("dirty", False))
+    worktree_sha = _compute_worktree_content_sha(root)
+    clean_git_tree = (not is_dirty) and (tree_sha not in ("unknown", "uncommitted"))
+    receipt_path = root / "evidence" / "gate_receipt.json"
+
+    if not execute_gate and receipt_path.is_file():
+        try:
+            existing = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                matches_content = (
+                    clean_git_tree
+                    and existing.get("tree_sha") == tree_sha
+                    and existing.get("worktree_sha") == worktree_sha
+                )
+                existing["receipt_verified"] = bool(matches_content)
+                existing["fresh_for_tree"] = bool(matches_content)
+                return existing
+        except Exception:
+            pass
+
+    if not execute_gate:
+        return {
+            "executed": False,
+            "receipt_verified": False,
+            "fresh_for_tree": False,
+            "passed": True,
+            "tree_sha": tree_sha,
+            "worktree_sha": worktree_sha,
+            "dirty": is_dirty,
+            "command": None,
+            "exit_code": None,
+        }
+
+    # Only reuse a recent passing receipt when the Git tree is clean, committed, and working-tree content SHA matches
+    if receipt_path.is_file() and clean_git_tree:
+        try:
+            existing = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(existing, dict)
+                and existing.get("tree_sha") == tree_sha
+                and existing.get("worktree_sha") == worktree_sha
+                and not existing.get("dirty", False)
+                and existing.get("exit_code") == 0
+                and (time.time() - float(existing.get("timestamp_epoch", 0))) < 600
+            ):
+                existing["cached"] = True
+                existing["receipt_verified"] = True
+                existing["fresh_for_tree"] = True
+                existing["reused_recent_receipt"] = True
+                return existing
+        except Exception:
+            pass
+
+    gate_script = root / "scripts" / "quality_gate.sh"
+    if gate_script.is_file():
+        cmd = ["bash", "scripts/quality_gate.sh"]
+    elif (root / "pyproject.toml").is_file() or (root / "tests").is_dir():
+        cmd = ["uv", "run", "pytest", "-q"] if shutil.which("uv") else ["python3", "-m", "pytest", "-q"]
+    elif (root / "package.json").is_file():
+        cmd = ["npm", "test", "--", "--run"]
+    elif (root / "Cargo.toml").is_file():
+        cmd = ["cargo", "test", "--quiet"]
+    else:
+        return {
+            "executed": False,
+            "receipt_verified": False,
+            "fresh_for_tree": False,
+            "passed": False,
+            "tree_sha": tree_sha,
+            "worktree_sha": worktree_sha,
+            "dirty": is_dirty,
+            "command": "<no quality_gate.sh or test runner found>",
+            "exit_code": 127,
+        }
+
+    t0 = time.perf_counter()
+    env = {**os.environ, "GWI_IN_GATE_EXECUTION": str(root.resolve())}
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(root),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+            start_new_session=True,
+        )
+        rc = proc.returncode
+        raw_tail = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()[-600:]
+        out_tail = raw_tail.replace(str(Path.home()) + "/", "~/")
+    except subprocess.TimeoutExpired:
+        rc = 124
+        out_tail = "Quality gate timed out after 180s"
+
+    dur_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+    post_fp = compute_subproject_fingerprint(git_root, subpath)
+    post_worktree_sha = _compute_worktree_content_sha(root)
+    post_tree_sha = str(post_fp.get("tree_sha") or "unknown")
+    post_dirty = bool(post_fp.get("dirty", False))
+    source_mutated = bool(post_worktree_sha != worktree_sha or post_tree_sha != tree_sha)
+    post_clean_git_tree = bool(
+        post_tree_sha not in ("unknown", "uncommitted", "") and not post_dirty and not source_mutated
+    )
+
+    cmd_str = " ".join(cmd).replace(str(Path.home()) + "/", "~/")
+    receipt = {
+        "executed": True,
+        "cached": False,
+        "receipt_verified": bool(not source_mutated),
+        "fresh_for_tree": bool(clean_git_tree and post_clean_git_tree),
+        "passed": bool(rc == 0 and not source_mutated),
+        "source_mutated_during_gate": source_mutated,
+        "tree_sha": post_tree_sha,
+        "worktree_sha": post_worktree_sha,
+        "dirty": bool(is_dirty or post_dirty),
+        "commit_sha": post_fp.get("commit_sha"),
+        "command": cmd_str,
+        "exit_code": rc,
+        "duration_ms": dur_ms,
+        "executed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp_epoch": round(time.time(), 2),
+        "output_tail": out_tail,
+    }
+    try:
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return receipt
+
+
 def evaluate_target(
     target: Path,
     profile: str = "auto",
@@ -6490,10 +6693,23 @@ def evaluate_target(
     theta: float = DEFAULT_THETA,
     k: float = DEFAULT_K,
     strict_lenses: bool = False,
+    execute_gate: bool = False,
 ) -> dict[str, Any]:
     """Evaluate any project directory, LaTeX treatise, or video file under the appropriate GWI profile."""
     resolved = target.expanduser().resolve()
     chosen_profile = detect_profile(resolved) if profile == "auto" else profile
+
+    in_recursive_gate = os.environ.get("GWI_IN_GATE_EXECUTION") == str(resolved)
+    gate_info: dict[str, Any] | None = None
+    gate_veto = False
+    if resolved.is_dir() and chosen_profile in ("app", "sim"):
+        gate_info = execute_or_verify_gate_receipt(
+            resolved,
+            execute_gate=bool(execute_gate and not in_recursive_gate),
+        )
+        if execute_gate and not in_recursive_gate and not gate_info.get("passed", False):
+            gate_veto = True
+
     if chosen_profile == "sim":
         report = evaluate_sim_profile(resolved, theta=theta, k=k)
     elif chosen_profile == "video":
@@ -6504,6 +6720,27 @@ def evaluate_target(
         report = evaluate_kb_profile(resolved, theta=theta, k=k)
     else:
         report = evaluate_app_profile(resolved, theta=theta, k=k)
+
+    report["audit_flags"] = {
+        "strict_lenses": bool(strict_lenses),
+        "probe_audio": bool(probe_audio),
+        "execute_gate": bool(execute_gate),
+    }
+
+    if gate_info is not None:
+        report["gate_execution"] = gate_info
+        if gate_veto:
+            report.setdefault("blockers", []).append(
+                {
+                    "id": "GWI-APP-U05",
+                    "severity": "P0",
+                    "dimension": "Tier 3 (Actionability / Run-Bound Verification)",
+                    "message": (
+                        f"VETO: Run-bound behavioral quality gate failed "
+                        f"(exit={gate_info.get('exit_code')}, cmd=`{gate_info.get('command')}`)"
+                    ),
+                }
+            )
 
     cl = evaluate_craft_lenses(resolved, report, strict_lenses=strict_lenses)
     # Surface GWI-SCI-* findings as first-class report blockers (P0/P1 with blocker=True veto via the lens above).
@@ -6525,16 +6762,25 @@ def evaluate_target(
     any_unmeasured = verga_unmeasured or chrysos_unmeasured
     sub_metrics = cl.get("subtractive_metrics") or None
 
-    if cl.get("veto_triggered") or (strict_lenses and any_unmeasured) or (sub_metrics and "edgeDensity" in sub_metrics):
+    if (
+        gate_veto
+        or cl.get("veto_triggered")
+        or (strict_lenses and any_unmeasured)
+        or (sub_metrics and "edgeDensity" in sub_metrics)
+    ):
         tiers = report["tiers"]
         capped_perc = float(tiers["S_perc"])
         capped_sub = float(tiers["S_sub"])
+        capped_act = float(tiers["S_act"])
         if cl.get("verga_veto_triggered") or (strict_lenses and verga_unmeasured):
             capped_perc = min(capped_perc, float(cl["verga_pole_score"]))
         if cl.get("chrysos_veto_triggered") or (strict_lenses and chrysos_unmeasured):
             capped_sub = min(capped_sub, float(cl["chrysos_pole_score"]))
+        if gate_veto:
+            capped_act = min(capped_act, 6.20)
         tiers["S_perc"] = round(capped_perc, 2)
         tiers["S_sub"] = round(capped_sub, 2)
+        tiers["S_act"] = round(capped_act, 2)
         w_key = chosen_profile if chosen_profile in ARCHETYPE_WEIGHTS else "app"
         extra_sub = (
             sub_metrics
@@ -6548,16 +6794,17 @@ def evaluate_target(
             weights=ARCHETYPE_WEIGHTS[w_key],
             theta=theta,
             k=k,
-            conscience_clean=bool(report["calculation"].get("conscience_lambda", 1) == 1),
+            conscience_clean=bool(report["calculation"].get("conscience_lambda", 1) == 1 and not gate_veto),
             subtractive_metrics=extra_sub,
         )
         tiers["S_sub"] = round(float(report["calculation"]["tier_scores"][0]), 2)
         tiers["S_perc"] = round(float(report["calculation"]["tier_scores"][1]), 2)
+        tiers["S_act"] = round(float(report["calculation"]["tier_scores"][2]), 2)
         cl["coupled_goldwood_g"] = compute_coupled_goldwood_g(
             report["calculation"],
             cl["chrysos_pole_score"],
             cl["verga_pole_score"],
-            veto_triggered=bool(cl.get("veto_triggered")),
+            veto_triggered=bool(cl.get("veto_triggered") or gate_veto),
         )
 
     report["craft_lenses"] = cl
@@ -6601,7 +6848,8 @@ def write_goldwood_evidence(target_dir: Path, report: dict[str, Any]) -> Path:
         "blockers": report["blockers"],
         "notes": report["notes"],
     }
-    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    serialized = json.dumps(payload, indent=2).replace(str(Path.home()) + "/", "~/")
+    out_path.write_text(serialized + "\n", encoding="utf-8")
     return out_path
 
 
@@ -6848,6 +7096,11 @@ def _configure_gwi_parser(parser: argparse.ArgumentParser) -> None:
         help="Cap Verga at <= 7.80 when required Craft Lens contact sheets/artifacts are unmeasured and exit 1 if coupled G < 9.0",
     )
     parser.add_argument("--probe-audio", action="store_true", help="Run live ffmpeg EBU R128 loudness scan on video")
+    parser.add_argument(
+        "--execute-gate",
+        action="store_true",
+        help="Execute scripts/quality_gate.sh (or language test runner) and bind evidence/gate_receipt.json to the current tree SHA",
+    )
     parser.add_argument(
         "--subprojects",
         action="store_true",
@@ -7192,6 +7445,9 @@ def cmd_gwi(args: argparse.Namespace) -> None:
 
     target_path = Path(rest[0]).expanduser().resolve() if rest else Path.cwd().resolve()
     strict_lenses = bool(getattr(args, "strict_lenses", False))
+    execute_gate = bool(getattr(args, "execute_gate", False))
+    probe_audio = bool(getattr(args, "probe_audio", False))
+    req_profile = str(getattr(args, "profile", "auto"))
     incremental = bool(getattr(args, "incremental", False))
 
     if getattr(args, "subprojects", False) and subcmd == "audit":
@@ -7200,7 +7456,14 @@ def cmd_gwi(args: argparse.Namespace) -> None:
         any_fail = False
         for sp in subs:
             sp_path = Path(sp["abs_path"])
-            fresh_info = evaluate_subproject_freshness(target_path, sp["subpath"])
+            fresh_info = evaluate_subproject_freshness(
+                target_path,
+                sp["subpath"],
+                requested_profile=sp["profile"],
+                require_strict_lenses=strict_lenses,
+                require_probe_audio=probe_audio if sp["profile"] == "video" else False,
+                require_execute_gate=execute_gate if sp["profile"] in ("app", "sim") else False,
+            )
             if incremental and fresh_info["is_fresh_pass"]:
                 sub_results.append(
                     {
@@ -7223,10 +7486,11 @@ def cmd_gwi(args: argparse.Namespace) -> None:
             sp_rep = evaluate_target(
                 sp_path,
                 profile=sp["profile"],
-                probe_audio=getattr(args, "probe_audio", False),
+                probe_audio=probe_audio,
                 theta=theta,
                 k=k,
                 strict_lenses=strict_lenses,
+                execute_gate=execute_gate,
             )
             aud_rec = record_gwi_audit(sp_path, sp_rep)
             if sp_rep["calculation"]["status"] != "PASS":
@@ -7260,7 +7524,14 @@ def cmd_gwi(args: argparse.Namespace) -> None:
             rel_sp = str(target_path.relative_to(root_dir)) if target_path != root_dir else "."
         except ValueError:
             rel_sp = "."
-        fresh_info = evaluate_subproject_freshness(root_dir, rel_sp)
+        fresh_info = evaluate_subproject_freshness(
+            root_dir,
+            rel_sp,
+            requested_profile=req_profile,
+            require_strict_lenses=strict_lenses,
+            require_probe_audio=probe_audio,
+            require_execute_gate=execute_gate,
+        )
         if fresh_info["is_fresh_pass"]:
             if getattr(args, "json", False):
                 print(json.dumps({"cache_hit": True, "freshness": fresh_info}, indent=2))
@@ -7279,16 +7550,17 @@ def cmd_gwi(args: argparse.Namespace) -> None:
 
     report = evaluate_target(
         target_path,
-        profile=getattr(args, "profile", "auto"),
-        probe_audio=getattr(args, "probe_audio", False),
+        profile=req_profile,
+        probe_audio=probe_audio,
         theta=theta,
         k=k,
         strict_lenses=strict_lenses,
+        execute_gate=execute_gate,
     )
     audit_rec = record_gwi_audit(target_path, report)
     report["audit_provenance"] = audit_rec
 
-    if getattr(args, "write_evidence", False):
+    if getattr(args, "write_evidence", False) and os.environ.get("GWI_IN_GATE_EXECUTION") != str(target_path.resolve()):
         ev_file = write_goldwood_evidence(target_path, report)
         report["evidence_file"] = str(ev_file)
 

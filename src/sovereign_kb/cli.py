@@ -1904,6 +1904,7 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
     ).fetchone()[0]
     hips_idx_dir = vault_dir / ".kb" / "hips-index"
     hips_ready = hips_idx_dir.is_dir() and any(hips_idx_dir.iterdir())
+    hips_bin = resolve_hips_bin()
     require_embed = getattr(args, "require_embeddings", False)
     if doc_count != len(md_files):
         violations.append(
@@ -1911,6 +1912,14 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
                 "gate": "Gate 4 (Index Sync)",
                 "file": ".kb/index.db",
                 "issue": f"Indexed document count ({doc_count}) != vault markdown file count ({len(md_files)}); run 'sovereign-kb sync'",
+            }
+        )
+    if vault_dir.name == "me-kb" and hips_bin and not hips_ready:
+        violations.append(
+            {
+                "gate": "Gate 4 (HIPS Index)",
+                "file": ".kb/hips-index",
+                "issue": "HIPS Block-Max WAND index is missing; run 'kb sync' or 'kb hips index'",
             }
         )
     if chunk_count == 0:
@@ -1954,11 +1963,35 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
     links_count = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
     conn.close()
 
-    for p in md_files:
+    legacy_mac_pat = re.compile(r"\bmac[12]\b(?!-offload|-full-test-matrix)")
+    naming_files = list(md_files)
+    if vault_dir.name == "me-kb":
+        skill_md = vault_dir / ".agents" / "skills" / "personal-codex" / "SKILL.md"
+        if skill_md.is_file():
+            naming_files.append(skill_md)
+
+    for p in naming_files:
         rel = str(p.relative_to(vault_dir))
         fence_char: str | None = None
         fence_len = 0
+        check_mac_naming = vault_dir.name == "me-kb" and not (
+            rel.startswith("04-episodic/") or rel == "02-operating-system/autonomous-rsi-distillations.md"
+        )
         for line_no, raw_line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if (
+                check_mac_naming
+                and "Canonical Mac Mini Naming Rule" not in raw_line
+                and legacy_mac_pat.search(raw_line)
+            ):
+                violations.append(
+                    {
+                        "gate": "Gate 5 (Canonical Mac Mini Naming)",
+                        "file": f"{rel}:{line_no}",
+                        "issue": "Deprecated Mac Mini shorthand detected; strictly use canonical workstation hostnames",
+                    }
+                )
+            if p not in md_files:
+                continue
             m_fence = re.match(r"^\s*(`{3,}|~{3,})", raw_line)
             if m_fence:
                 run = m_fence.group(1)

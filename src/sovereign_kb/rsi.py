@@ -243,6 +243,30 @@ def split_benchmark_suite(
             heldout_probes.append(dict(hp))
             seen_q.add(hp["query"].lower())
 
+    outcome_probes_path = vault_dir / ".kb" / "gwi_outcome_probes.json"
+    if outcome_probes_path.is_file():
+        try:
+            loaded_outcome = json.loads(outcome_probes_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_outcome, list):
+                for op in loaded_outcome[-24:]:
+                    if (
+                        isinstance(op, dict)
+                        and op.get("target_path") in existing_docs
+                        and str(op.get("query", "")).lower() not in seen_q
+                    ):
+                        heldout_probes.append(
+                            {
+                                "id": str(op.get("id", "OUTCOME-01")),
+                                "query": str(op.get("query", "")),
+                                "target_path": str(op.get("target_path", "")),
+                                "target_heading": str(op.get("target_heading", "")),
+                                "split": "heldout",
+                            }
+                        )
+                        seen_q.add(str(op.get("query", "")).lower())
+        except Exception:
+            pass
+
     for idx, p in enumerate(all_probes):
         if p["query"].lower() in seen_q:
             continue

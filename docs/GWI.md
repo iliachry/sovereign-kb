@@ -59,10 +59,11 @@ To eliminate AI kitchen-sink bloat (`M1`–`M7`), structural irregularity, cogni
 skb gwi lenses
 skb gwi lenses ~/Projects/my-app
 
-# Run the 9+ Goldwood Gate with strict Principal-Grade Artifact Probes & write evidence/goldwood.json
-skb gwi audit . --strict --strict-lenses --write-evidence
+# Run the 9+ Goldwood Gate with strict Principal-Grade Artifact Probes, Run-Bound Gate Execution (`GWI-APP-U05`), & write evidence/goldwood.json
+skb gwi audit . --strict --strict-lenses --execute-gate --write-evidence
 skb goldwood audit .
 skb audit .
+organon audit .
 
 # Run the standalone Law L7 Structural Regularity (Kanonikotita) audit
 skb gwi regularity .

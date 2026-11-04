@@ -1319,14 +1319,42 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     quiet = getattr(args, "quiet", False)
 
     remote_checks = []
+    remote_peer_sessions: dict[str, Any] | None = None
     # In --quiet (cron/launchd) mode, skip remote SSH completely when no local session is active/waiting
     if getattr(args, "check_remote", False) or getattr(args, "heal", False):
         if not quiet or active_count > 0:
             remote_checks = scan_remote_unity_deadlocks(heal=getattr(args, "heal", False))
+            remote_peer_host = _get_cluster_env("KB_REMOTE_PEER")
+            if getattr(args, "check_remote", False) and not quiet and remote_peer_host:
+                try:
+                    rproc = subprocess.run(
+                        [
+                            "ssh",
+                            "-o",
+                            "BatchMode=yes",
+                            "-o",
+                            "ConnectTimeout=3",
+                            remote_peer_host,
+                            "export PATH=$HOME/.local/bin:/opt/homebrew/bin:$PATH && kb sessions --json",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=6,
+                    )
+                    if rproc.returncode == 0 and (rproc.stdout or "").strip().startswith("{"):
+                        remote_peer_sessions = json.loads(rproc.stdout)
+                        remote_peer_sessions["node"] = remote_peer_host
+                except Exception:
+                    remote_peer_sessions = None
 
-    deadlocked_count = sum(1 for s in sessions if s["state"] == "DEADLOCKED_BG_TASK") + sum(
-        1 for r in remote_checks if r.get("deadlocked")
+    remote_active_count = int((remote_peer_sessions or {}).get("active_sessions_count", 0))
+    deadlocked_count = (
+        sum(1 for s in sessions if s["state"] == "DEADLOCKED_BG_TASK")
+        + sum(1 for r in remote_checks if r.get("deadlocked"))
+        + int((remote_peer_sessions or {}).get("deadlocked_count", 0))
     )
+    safe_to_restart = (active_count == 0) and (remote_active_count == 0) and (deadlocked_count == 0)
 
     if quiet and deadlocked_count == 0:
         return
@@ -1336,11 +1364,13 @@ def cmd_sessions(args: argparse.Namespace) -> None:
             json.dumps(
                 {
                     "active_sessions_count": active_count,
+                    "remote_active_sessions_count": remote_active_count,
                     "pending_followup_count": followup_count,
                     "deadlocked_count": deadlocked_count,
-                    "safe_to_restart": active_count == 0,
+                    "safe_to_restart": safe_to_restart,
                     "sessions": sessions,
                     "remote_unity_checks": remote_checks,
+                    "remote_peer_sessions": remote_peer_sessions,
                 },
                 indent=2,
             )
@@ -1351,7 +1381,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     print(
         f"=== Sovereign Agent Session & Background Task Auditor (`kb sessions`, window={window_lbl}, total={len(sessions)}) ===\n"
         f"  Active / Running Sessions : {active_count} | Pending Follow-Ups: {followup_count} | Deadlocks Detected: {deadlocked_count} "
-        f"| Safe to Restart IDE: {'YES' if active_count == 0 else 'NO'}"
+        f"| Safe to Restart IDE: {'YES' if safe_to_restart else 'NO'}"
     )
 
     for s in sessions:
@@ -1376,6 +1406,18 @@ def cmd_sessions(args: argparse.Namespace) -> None:
                 print(f"    Running Task   : {rt['task_id']} (log idle={rt['log_idle_s']}s)")
                 for err in rt["fatal_errors"]:
                     print(f"      [FATAL ERROR]: {err}")
+
+    if remote_peer_sessions:
+        r_node = remote_peer_sessions.get("node", "remote-peer")
+        r_act = remote_peer_sessions.get("active_sessions_count", 0)
+        r_tot = len(remote_peer_sessions.get("sessions") or [])
+        print(f"\n  [Remote Peer Session Audit: `{r_node}` — active={r_act}, total={r_tot}]")
+        for rs in (remote_peer_sessions.get("sessions") or [])[:4]:
+            print(
+                f"    - [{rs.get('state', '?'):18s}] {rs.get('conversation_id')} "
+                f"(step={rs.get('last_step_index')}, {rs.get('last_activity_age_s')}s ago): "
+                f"{(rs.get('first_user_prompt') or '(no prompt)')[:75]}"
+            )
 
     if remote_checks:
         print("\n  [Remote Cluster Engine Checks]")

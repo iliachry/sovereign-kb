@@ -217,10 +217,46 @@ def compute_subproject_fingerprint(
         status_out = _run_git(root, "status", "--porcelain", "--", norm)
         dirty = bool(status_out.strip())
 
+    # Compute deterministic fingerprint of untracked/tracked runtime evidence & diagnostics artifacts
+    ev_hasher = hashlib.sha256()
+    ev_root = target_path if target_path.is_dir() else target_path.parent
+    if ev_root.is_dir():
+        seen_ev: set[Path] = set()
+        ev_candidates: list[Path] = []
+        for pat in (
+            "evidence/**/*.json",
+            "evidence/**/*.txt",
+            "artifacts/**/*.json",
+            "artifacts/**/*.txt",
+            "results/**/*.json",
+            "**/walkthrough-report.json",
+        ):
+            for p_ev in sorted(ev_root.glob(pat)):
+                if any(part in (".git", "node_modules", ".venv", "target", "dist", "build") for part in p_ev.parts):
+                    continue
+                if p_ev.name in ("goldwood.json", "gate_receipt.json") or p_ev in seen_ev:
+                    continue
+                if p_ev.is_file():
+                    seen_ev.add(p_ev)
+                    ev_candidates.append(p_ev)
+        ev_candidates.sort(key=lambda p: str(p))
+        for p_ev in ev_candidates:
+            try:
+                rel_ev = str(p_ev.relative_to(ev_root))
+            except ValueError:
+                rel_ev = p_ev.name
+            ev_hasher.update(rel_ev.encode("utf-8"))
+            try:
+                ev_hasher.update(p_ev.read_bytes())
+            except OSError:
+                pass
+    evidence_sha = ev_hasher.hexdigest()[:16]
+
     return {
         "commit_sha": commit_sha or "uncommitted",
         "full_commit_sha": full_commit_sha or "",
         "tree_sha": tree_sha or "unknown",
+        "evidence_sha": evidence_sha,
         "dirty": dirty,
     }
 
@@ -436,6 +472,7 @@ def record_gwi_audit(
             if m_id and m_id not in base_models:
                 base_models.append(m_id)
 
+    audit_flags = report.get("audit_flags") or {}
     audit_record = {
         "subpath": subpath,
         "name": repo_name if subpath == "." else f"{repo_name}:{subpath}",
@@ -444,7 +481,11 @@ def record_gwi_audit(
         "commit_sha": fp["commit_sha"],
         "full_commit_sha": fp["full_commit_sha"],
         "tree_sha": fp["tree_sha"],
+        "evidence_sha": fp.get("evidence_sha", ""),
         "dirty_at_audit": fp["dirty"],
+        "strict_lenses": bool(audit_flags.get("strict_lenses", False)),
+        "probe_audio": bool(audit_flags.get("probe_audio", False)),
+        "execute_gate": bool(audit_flags.get("execute_gate", False)),
         "goldwood_g": calc.get("goldwood_g"),
         "coupled_g": cl.get("coupled_goldwood_g", calc.get("goldwood_g")),
         "status": calc.get("status", "FAIL"),
@@ -458,9 +499,23 @@ def record_gwi_audit(
     if subpath == "." or not proj.get("last_audit"):
         proj["last_audit"] = audit_record
 
-    if not _should_skip_default_registry_write(repo_root):
+    in_gate_exec = os.environ.get("GWI_IN_GATE_EXECUTION") == str(repo_root.resolve())
+    if not _should_skip_default_registry_write(repo_root) and not in_gate_exec:
         save_audit_registry(registry)
         _update_passport_yaml_audit(repo_root, proj)
+        raw_root = str(repo_root)
+        is_temp_or_test = (
+            bool(os.environ.get("PYTEST_CURRENT_TEST"))
+            or "/pytest-of-" in raw_root
+            or raw_root.startswith(("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"))
+        )
+        if not is_temp_or_test:
+            try:
+                from .bridge import record_gwi_outcome_feedback
+
+                record_gwi_outcome_feedback(target_path=resolved, report=report, commit_sha=fp["commit_sha"])
+            except Exception:
+                pass
     return audit_record
 
 
@@ -555,7 +610,14 @@ def record_triad_audit(
     return triad_info
 
 
-def evaluate_subproject_freshness(repo_root: Path, subpath: str = ".") -> dict[str, Any]:
+def evaluate_subproject_freshness(
+    repo_root: Path,
+    subpath: str = ".",
+    requested_profile: str = "auto",
+    require_strict_lenses: bool = False,
+    require_probe_audio: bool = False,
+    require_execute_gate: bool = False,
+) -> dict[str, Any]:
     """Check whether `<repo_root>:<subpath>` has a valid, up-to-date audit or needs re-evaluation."""
     root = find_git_root(repo_root)
     repo_name = root.name
@@ -570,10 +632,27 @@ def evaluate_subproject_freshness(repo_root: Path, subpath: str = ".") -> dict[s
 
     audited_at = sp_rec.get("audited_at")
     rec_tree = sp_rec.get("tree_sha")
+    rec_ev_sha = sp_rec.get("evidence_sha")
     rec_commit = sp_rec.get("commit_sha")
     rec_status = sp_rec.get("status", "UNAUDITED")
     rec_ver = sp_rec.get("versions") or {}
     triad = sp_rec.get("triad") or proj.get("triad") or {}
+
+    kb_sha_drift = bool(
+        not rec_ver.get("kb_sha")
+        or (cur_versions.get("kb_sha") and rec_ver.get("kb_sha") != cur_versions.get("kb_sha"))
+    )
+    ev_sha_drift = bool(not rec_ev_sha or rec_ev_sha != fp.get("evidence_sha", ""))
+    profile_drift = bool(
+        requested_profile not in ("auto", "", None)
+        and sp_rec.get("profile")
+        and sp_rec.get("profile") != requested_profile
+    )
+    strictness_drift = bool(
+        (require_strict_lenses and not sp_rec.get("strict_lenses", False))
+        or (require_probe_audio and not sp_rec.get("probe_audio", False))
+        or (require_execute_gate and not sp_rec.get("execute_gate", False))
+    )
 
     if not audited_at or not rec_tree:
         freshness = "UNAUDITED"
@@ -581,8 +660,14 @@ def evaluate_subproject_freshness(repo_root: Path, subpath: str = ".") -> dict[s
         freshness = "DIRTY"
     elif rec_tree != fp["tree_sha"]:
         freshness = "STALE_CODE"
-    elif rec_ver.get("gwi_version") != cur_versions["gwi_version"]:
+    elif ev_sha_drift:
+        freshness = "STALE_EVIDENCE"
+    elif rec_ver.get("gwi_version") != cur_versions["gwi_version"] or kb_sha_drift:
         freshness = "VERSION_DRIFT"
+    elif profile_drift:
+        freshness = "PROFILE_MISMATCH"
+    elif strictness_drift:
+        freshness = "LOWER_STRICTNESS"
     elif rec_status != "PASS":
         freshness = "FAILED"
     else:
@@ -598,10 +683,15 @@ def evaluate_subproject_freshness(repo_root: Path, subpath: str = ".") -> dict[s
         "is_fresh_pass": freshness == "FRESH" and rec_status == "PASS",
         "current_commit": fp["commit_sha"],
         "current_tree": fp["tree_sha"],
+        "current_evidence_sha": fp.get("evidence_sha", ""),
         "dirty": fp["dirty"],
         "audited_at": audited_at,
         "audited_commit": rec_commit,
         "audited_tree": rec_tree,
+        "audited_evidence_sha": rec_ev_sha,
+        "strict_lenses": bool(sp_rec.get("strict_lenses", False)),
+        "probe_audio": bool(sp_rec.get("probe_audio", False)),
+        "execute_gate": bool(sp_rec.get("execute_gate", False)),
         "goldwood_g": sp_rec.get("goldwood_g"),
         "coupled_g": sp_rec.get("coupled_g"),
         "status": rec_status,
