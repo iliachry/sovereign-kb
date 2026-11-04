@@ -2856,3 +2856,29 @@ def test_pistis_blockchain_tokenomics_and_aristocracy(tmp_path: Path, capsys) ->
     main(["chain", "status", "--json"])
     cli_out = json.loads(capsys.readouterr().out)
     assert cli_out["protocol_version"] == "1.0.0"
+
+
+def test_public_boundary_and_canonical_probes_hygiene():
+    """Verify that sovereign-kb (public open-source library) strictly contains zero private vault probes or notes."""
+    from sovereign_kb.rsi import CANONICAL_BENCHMARK_PROBES, CANONICAL_HELDOUT_PROBES
+
+    starter_vault = Path(__file__).resolve().parent.parent / "src" / "sovereign_kb" / "starter_vault"
+    assert starter_vault.is_dir(), "starter_vault must exist in source distribution"
+
+    all_canonical_probes = list(CANONICAL_BENCHMARK_PROBES) + list(CANONICAL_HELDOUT_PROBES)
+    assert len(all_canonical_probes) >= 10, "Must have benchmark probes"
+
+    for probe in all_canonical_probes:
+        target_path = probe["target_path"]
+        # Invariant 1: No personal identity, episodic, or private note paths in public probes
+        assert not target_path.startswith("00-identity/"), f"Private identity path found in public probe: {probe}"
+        assert not target_path.startswith("04-episodic/"), f"Private episodic path found in public probe: {probe}"
+        assert "syneidesis" not in target_path.lower(), f"Private treatise found in public probe: {probe}"
+        assert "syneidesis" not in probe["query"].lower(), f"Private treatise query found in public probe: {probe}"
+
+        # Invariant 2: Every single probe target MUST exist in public starter_vault
+        target_file = starter_vault / target_path
+        assert target_file.is_file(), (
+            f"Canonical probe target '{target_path}' does not exist in starter_vault. "
+            f"Public probes must ONLY reference public starter_vault documents!"
+        )
