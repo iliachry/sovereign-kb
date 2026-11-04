@@ -323,7 +323,13 @@ def collect_organon_status(all_nodes: bool = False) -> dict[str, Any]:
                 total_targets += 1
                 if sp_entry.get("status") == "PASS":
                     recorded_pass += 1
-                    if check_live_freshness and repo_exists and repo_root_path is not None:
+                    sp_ver = sp_entry.get("versions") or {}
+                    ver_match = bool(
+                        sp_ver.get("kb_sha")
+                        and sp_ver.get("kb_sha") == versions.get("kb_sha")
+                        and sp_ver.get("gwi_version") == versions.get("gwi_version")
+                    )
+                    if check_live_freshness and repo_exists and repo_root_path is not None and ver_match:
                         try:
                             f_info = evaluate_subproject_freshness(repo_root_path, str(sp_key))
                             if f_info.get("is_fresh_pass"):
@@ -343,7 +349,13 @@ def collect_organon_status(all_nodes: bool = False) -> dict[str, Any]:
             last_a = proj_entry.get("last_audit") or {}
             if last_a.get("status") == "PASS":
                 recorded_pass += 1
-                if check_live_freshness and repo_exists and repo_root_path is not None:
+                la_ver = last_a.get("versions") or {}
+                ver_match = bool(
+                    la_ver.get("kb_sha")
+                    and la_ver.get("kb_sha") == versions.get("kb_sha")
+                    and la_ver.get("gwi_version") == versions.get("gwi_version")
+                )
+                if check_live_freshness and repo_exists and repo_root_path is not None and ver_match:
                     try:
                         f_info = evaluate_subproject_freshness(repo_root_path, ".")
                         if f_info.get("is_fresh_pass"):

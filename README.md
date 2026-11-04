@@ -133,6 +133,7 @@ skb dashboard --export
 | Print your Tier-0 profile (`00-identity/README-me.md` + `01-now/now.md`) | `skb me` |
 | Print zero-context-tax Creative Mode Resumption Packet(s) (`all`, `math`, `compute`, `spatial`, `writing`) | `skb resume math` |
 | Show vault & index status | `skb status` |
+| Run Autonomous Human-Like Video Playback Audit (native `.mp4` stream to Bedrock Nova Pro + Triad keyframes) | `skb video audit artifacts/walkthrough_compressed.mp4` |
 | Run the Unified Sovereign Organon CLI (`organon status`, `organon showcase`, `organon task`, `organon finish`, `organon sync-state`, `organon chain`) | `organon status --all-nodes` |
 | Run Pistis On-Chain Bilateral Negotiation, RFC 6962 Merkle Anchor, PhD Tokenomics & Software Aristocracy (`skb chain` / `organon chain`) | `organon chain full-suite` |
 
