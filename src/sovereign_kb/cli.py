@@ -3947,6 +3947,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
         help="Strictly validate YAML frontmatter, schema, and syntax of all installed skills & plugins",
     )
 
+    from sovereign_kb.chain import register_chain_subparser
     from sovereign_kb.gwi import register_gwi_subparser
     from sovereign_kb.sessions import register_sessions_subparser
     from sovereign_kb.soar import register_soar_subparser
@@ -3954,6 +3955,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     register_gwi_subparser(sub, show_all_aliases=show_all_aliases)
     register_soar_subparser(sub, show_all_aliases=show_all_aliases)
     register_sessions_subparser(sub, show_all_aliases=show_all_aliases)
+    register_chain_subparser(sub, show_all_aliases=show_all_aliases)
     return parser
 
 
@@ -4311,6 +4313,10 @@ def main(argv: list[str] | None = None) -> None:
         from sovereign_kb.soar import cmd_soar
 
         cmd_soar(args, resolve_vault_dir)
+    elif args.cmd in ("chain", "pistis", "blockchain"):
+        from sovereign_kb.chain import cmd_chain
+
+        cmd_chain(args)
     elif args.cmd == "git-sync":
         args.mode = "sync"
         cmd_git_sync(args)

@@ -40,6 +40,13 @@ from .bridge import (
     retrieve_vault_precedents,
     verify_triad_provenance_chain,
 )
+from .chain import (
+    PISTIS_PROTOCOL_VERSION,
+    anchor_organon_attestation,
+    cmd_chain,
+    collect_pistis_summary,
+    register_chain_subparser,
+)
 from .gwi import GWI_STANDARD_VERSION
 from .sessions import _get_cluster_env
 
@@ -390,12 +397,34 @@ def collect_organon_status(all_nodes: bool = False) -> dict[str, Any]:
             except Exception as exc:
                 cluster["peers"][peer] = {"reachable": False, "error": str(exc)}
 
+    try:
+        pistis = collect_pistis_summary()
+    except Exception as exc:
+        pistis = {
+            "protocol_version": PISTIS_PROTOCOL_VERSION,
+            "anchors_path": "",
+            "anchors_chain_valid": False,
+            "merkle_anchors_count": 0,
+            "latest_merkle_root": None,
+            "nc_fsm_states": 7,
+            "iso_territories_encoded": 249,
+            "mpc_rmse": 0.0,
+            "mpc_volatility_reduction_x": 0.0,
+            "lyapunov_schur_stable": False,
+            "aristocracy_gamma0": 0.0,
+            "aristocracy_tilde0": 0.0,
+            "aristocracy_gini0": 0.0,
+            "constitutional_resilience_ok": False,
+            "error": str(exc),
+        }
+
     return {
         "organon_version": __version__,
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "episteme_kb": episteme,
         "techne_swm": techne,
         "phronesis_gwi": phronesis,
+        "pistis_chain": pistis,
         "cluster": cluster,
     }
 
@@ -404,15 +433,17 @@ def print_organon_status(status: dict[str, Any]) -> None:
     kb = status["episteme_kb"]
     swm = status["techne_swm"]
     gwi = status["phronesis_gwi"]
+    pis = status.get("pistis_chain") or collect_pistis_summary()
     cl = status["cluster"]
 
     mode_badge = "DRY-RUN (Safe Preview)" if swm["dry_run_mode"] else "ARMED (Autonomous Execution)"
     poll_str = f"{swm['last_poll_age_s']}s ago" if swm.get("last_poll_age_s") is not None else "never"
     hips_str = "READY" if kb["hips_ready"] else "MISSING"
     chain_str = "VALID" if kb["provenance_chain_valid"] else "BROKEN"
+    const_str = "PASS" if pis.get("constitutional_resilience_ok") else "FAIL"
 
     print("╔══════════════════════════════════════════════════════════════════════════════════════════╗")
-    print("║  THE SOVEREIGN ORGANON (Ὄργανον) — Episteme (kb) · Techne (swm) · Phronesis (gwi)       ║")
+    print("║  THE SOVEREIGN ORGANON (Ὄργανον) — Episteme · Techne · Phronesis · Pistis (On-Chain)     ║")
     print("╚══════════════════════════════════════════════════════════════════════════════════════════╝")
     print(f"  [1] EPISTEME (`kb` v{kb['version']} @ {kb['engine_sha']}, vault={kb['git_sha']})")
     print(
@@ -442,10 +473,23 @@ def print_organon_status(status: dict[str, Any]) -> None:
         print(
             f"      Scores     : Mean G(S) = {gwi['mean_goldwood_g']:.2f} / 10.00 | Min G(S) = {gwi['min_goldwood_g']:.2f}"
         )
+    print()
+    print(f"  [4] PISTIS (`organon chain` v{pis.get('protocol_version', PISTIS_PROTOCOL_VERSION)})")
+    print(
+        f"      Licensing  : Poetics 7-State NC FSM ({pis['iso_territories_encoded']} ISO territories) + PLT + Dual-Escrow RoyaltySplitter"
+    )
+    print(
+        f"      Tokenomics : PhD Lyapunov-MPC RMSE={pis['mpc_rmse']:.4f} ({pis['mpc_volatility_reduction_x']}x damping) "
+        f"| Aristocracy Gamma_0={pis['aristocracy_gamma0']:.2f} (P1-P5={const_str})"
+    )
+    print(
+        f"      Anchors    : {pis['merkle_anchors_count']} RFC 6962 Merkle block(s) "
+        f"(root={pis.get('latest_merkle_root') or 'unanchored'})"
+    )
 
     if cl.get("peers"):
         print()
-        print(f"  [4] CLUSTER TOPOLOGY (Local Host: `{cl['local_node']}`)")
+        print(f"  [5] CLUSTER TOPOLOGY (Local Host: `{cl['local_node']}`)")
         for peer, pinfo in cl["peers"].items():
             if pinfo.get("reachable"):
                 print(f"      • {peer:<15}: ONLINE ({pinfo['latency_ms']} ms) — {pinfo['summary']}")
@@ -523,8 +567,25 @@ def build_showcase_payload() -> dict[str, Any]:
         },
         {
             "id": "WF-05",
+            "pillar": "Pistis (`organon chain`)",
+            "title": "5. On-Chain Bilateral Licensing, Merkle Anchoring & PhD Tokenomics",
+            "when_to_use": "Executing Poetics/kall.fyi bilateral contracts, anchoring GWI provenance, or auditing tokenomics & aristocracy.",
+            "commands": [
+                "organon chain negotiate",
+                "organon chain anchor --target .",
+                "organon chain tokenomics",
+                "organon chain aristocracy",
+            ],
+            "what_happens": (
+                "Runs the Poetics 7-State Negotiation Contract (`NC`) FSM + `PLT` mint + Dual Push/Pull-Escrow `RoyaltySplitter`, "
+                "anchors an RFC 6962 Merkle root with P3 provenance trace into `~/.swm/chain_anchors.jsonl`, verifies PhD Lyapunov-MPC "
+                "stability + EGT ESS + Folk-Theorem collusion index + Antifragility (`AMI`), and audits Software Aristocracy (`Gamma_0`, P1-P5)."
+            ),
+        },
+        {
+            "id": "WF-06",
             "pillar": "Closure & Cross-Workstation Sync",
-            "title": "5. Atomic End-of-Task Closure & Cross-Workstation Registry Merge",
+            "title": "6. Atomic End-of-Task Closure & Cross-Workstation Registry Merge",
             "when_to_use": "Completing an engineering task and synchronizing state across workstations.",
             "commands": [
                 "organon sync-state",
@@ -532,7 +593,8 @@ def build_showcase_payload() -> dict[str, Any]:
             ],
             "what_happens": (
                 "Runs `readme_check.py`, executes the run-bound GWI gate, runs the 6-Gate `kb verify` doctor, "
-                "non-destructively merges `~/.swm/audit_registry.json` with the remote peer, and performs an atomic `kb push`."
+                "anchors the RFC 6962 Merkle attestation block, non-destructively merges `~/.swm/audit_registry.json` "
+                "with the remote peer, and performs an atomic `kb push`."
             ),
         },
     ]
@@ -542,7 +604,7 @@ def build_showcase_payload() -> dict[str, Any]:
 def print_organon_showcase(payload: dict[str, Any]) -> None:
     print_organon_status(payload["status"])
     print("\n╔══════════════════════════════════════════════════════════════════════════════════════════╗")
-    print("║  HOW YOU INTERACT WITH THE ORGANON — 5 CANONICAL WORKFLOWS                              ║")
+    print("║  HOW YOU INTERACT WITH THE ORGANON — 6 CANONICAL WORKFLOWS                              ║")
     print("╚══════════════════════════════════════════════════════════════════════════════════════════╝")
     for wf in payload["workflows"]:
         print(f"\n  ■ {wf['title']}  [{wf['pillar']}]")
@@ -754,13 +816,19 @@ def main_cli(argv: list[str] | None = None) -> None:
 
     p_fin = sub.add_parser(
         "finish",
-        help="Run end-of-task verification (`readme_check` + `gwi --execute-gate` + `kb verify` + cross-node sync + optional `kb push`)",
+        help="Run end-of-task verification (`readme_check` + `gwi --execute-gate` + `kb verify` + Merkle anchor + cross-node sync + optional `kb push`)",
     )
     p_fin.add_argument("target", nargs="?", default=".", help="Target repository path (default: .)")
     p_fin.add_argument("-m", "--message", help="Episodic commit message for atomic `kb push -m ...`")
     p_fin.add_argument("--skip-push", action="store_true", help="Do not run `kb push` even if -m is provided")
 
+    register_chain_subparser(sub, show_all_aliases=True)
+
     parsed = parser.parse_args(args_list)
+
+    if parsed.subcmd in ("chain", "pistis", "blockchain"):
+        cmd_chain(parsed)
+        return
 
     if parsed.subcmd == "status":
         st = collect_organon_status(all_nodes=bool(parsed.all_nodes))
@@ -855,23 +923,34 @@ def main_cli(argv: list[str] | None = None) -> None:
         target_dir = Path(parsed.target).expanduser().resolve()
         readme_chk = Path(__file__).resolve().parent / "readme_check.py"
         if readme_chk.is_file() and (target_dir / "README.md").is_file():
-            print(f"=== [1/4] Running README Zero-Hallucination Gate on `{target_dir.name}` ===")
+            print(f"=== [1/5] Running README Zero-Hallucination Gate on `{target_dir.name}` ===")
             rc_rm = subprocess.run([sys.executable, str(readme_chk), str(target_dir)], check=False).returncode
             if rc_rm != 0:
                 sys.exit(rc_rm)
 
-        print(f"\n=== [2/4] Running Run-Bound GWI 9+ Gate on `{target_dir.name}` ===")
+        print(f"\n=== [2/5] Running Run-Bound GWI 9+ Gate on `{target_dir.name}` ===")
         from .gwi import main_cli as gwi_main
 
         gwi_main(["audit", str(target_dir), "--strict", "--strict-lenses", "--execute-gate", "--write-evidence"])
 
-        print("\n=== [3/4] Running 6-Gate Sovereign KB Doctor (`kb verify`) ===")
+        print("\n=== [3/5] Running 6-Gate Sovereign KB Doctor (`kb verify`) ===")
         skb_bin = shutil.which("skb") or str(Path.home() / ".local" / "bin" / "skb")
         rc_kb = subprocess.run([skb_bin, "--vault", str(_default_me_kb_dir()), "verify"], check=False).returncode
         if rc_kb != 0:
             sys.exit(rc_kb)
 
-        print("\n=== [4/4] Synchronizing Organon Registry with Remote Peer ===")
+        print("\n=== [4/5] Anchoring RFC 6962 Merkle Attestation (`organon chain anchor`) ===")
+        try:
+            anchor_rec = anchor_organon_attestation(target_dir=target_dir)
+        except (ValueError, OSError) as exc:
+            print(f"[organon finish] ERROR anchoring RFC 6962 attestation: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(
+            f"  Anchored {anchor_rec['anchor_id']}: root={anchor_rec['rfc6962_merkle_root'][:22]}... "
+            f"(leaves={anchor_rec['merkle_leaves_count']}, proof_verified={anchor_rec['inclusion_proof_verified']})"
+        )
+
+        print("\n=== [5/5] Synchronizing Organon Registry with Remote Peer ===")
         sync_res = sync_organon_state_remote(peer=None, quiet=False)
         if not sync_res.get("synced", False):
             sys.exit(1)

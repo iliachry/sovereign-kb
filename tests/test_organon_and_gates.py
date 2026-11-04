@@ -298,11 +298,12 @@ def test_organon_status_and_showcase_cli(capsys) -> None:
     assert "episteme_kb" in st
     assert "techne_swm" in st
     assert "phronesis_gwi" in st
+    assert "pistis_chain" in st
 
     showcase = build_showcase_payload()
-    assert len(showcase["workflows"]) == 5
+    assert len(showcase["workflows"]) == 6
 
     main_cli(["showcase", "--json"])
     out = capsys.readouterr().out
     parsed = json.loads(out)
-    assert len(parsed["workflows"]) == 5
+    assert len(parsed["workflows"]) == 6

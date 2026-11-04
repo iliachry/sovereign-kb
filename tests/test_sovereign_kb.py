@@ -2656,3 +2656,203 @@ def test_gwi_kb_profile_spectral_and_adversarial(
         (gate_dir / "scripts" / "quality_gate.sh").write_text(hollow_body, encoding="utf-8")
         f_kb_hollow, _ = check_hollow_gate(gate_dir, "kb")
         assert any(f["id"] == "GWI-SCI-03" for f in f_kb_hollow)
+
+
+def test_pistis_blockchain_tokenomics_and_aristocracy(tmp_path: Path, capsys) -> None:
+    """
+    Verify Pistis (Πίστις — `sovereign_kb.chain`):
+      1. Poetics 7-State Negotiation Contract FSM (`NC`), `PLT` minting, S1-S4 invariants,
+         249 ISO 3166-1 alpha-2 territory bitmap, and Dual Push/Pull-Escrow `RoyaltySplitter`.
+      2. RFC 6962 Domain-Separated Merkle Tree + P3 Provenance Trace + Privilege-Gap Circuit Breaker.
+      3. PhD Tokenomics (`ai_tokenomics` EGT ESS p*=8, Folk-Theorem Collusion Index, PID/MPC +
+         Discrete-Time Lyapunov Solver) & Antifragility (`antifragility` C''(J)>0, AMI).
+      4. PhD Software Aristocracy (`aristocracy` Gamma_0, Gamma_tilde_0, Gini, Blast Radius, P1-P5).
+    """
+    from sovereign_kb.chain import (
+        BilateralNegotiationEngine,
+        TermBundle,
+        anchor_organon_attestation,
+        audit_organon_aristocracy,
+        compute_merkle_root,
+        decode_territories,
+        encode_territories,
+        evaluate_antifragile_curving_and_ami,
+        generate_merkle_proof,
+        is_territory_permitted,
+        merkle_leaf_hash,
+        merkle_node_hash,
+        run_negotiation_simulation,
+        run_tokenomics_suite,
+        verify_merkle_proof,
+        verify_p3_provenance_trace,
+    )
+
+    # 1. Poetics Bilateral Negotiation FSM & S1-S4 Guards
+    sim = run_negotiation_simulation()
+    assert sim["fsm_final_state"] == "FINALIZED"
+    assert sim["s1_signatures_verified"] is True
+    assert sim["s2_self_acceptance_blocked"] is True
+    assert sim["s2_frontrunning_blocked"] is True
+    assert sim["s3_atomic_plt_minted"] is True
+    assert sim["system_wei_conserved"] is True
+    assert sim["royalty_distribution"]["wei_conserved"] is True
+    assert sim["pull_escrow_withdrawn_wei"] == 200_000_000_000_000_000
+
+    # Verify S4 Liveness Under Expiry (`expire()`), `reject()`, escrow refunds, negotiated royalty scaling,
+    # concurrent exclusivity race guard, and negative tickets_count guard
+    eng = BilateralNegotiationEngine()
+    eng.register_work(
+        "0xwork_s4",
+        "did:ethr:0xCreator",
+        creators_shares_bps=[("did:ethr:0xCreator", 5000), ("did:ethr:0xCoCreator", 2000)],
+    )
+    tb = TermBundle(2000, 100, 86400, encode_territories(["GR", "CY"]), False, 10)
+    assert decode_territories(tb.geo_territories) == ["CY", "GR"]
+    assert is_territory_permitted(tb.geo_territories, "GR") is True
+    assert is_territory_permitted(tb.geo_territories, "US") is False
+    assert is_territory_permitted(encode_territories(["ALL"]), "ZZ") is False
+
+    # Reject float/unassigned-bit TermBundle
+    with pytest.raises(ValueError):
+        TermBundle(5000.9, 0, 86400, encode_territories(["GR"]), False, 10).validate()  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        TermBundle(5000, 0, 86400, 1 << 250, False, 10).validate()
+
+    # Escrow refunded on expire and reject
+    s_exp = eng.open_session(
+        "0xwork_s4", "did:ethr:0xCreator", "did:ethr:0xPlatA", tb, "did:ethr:0xCreator", escrow_wei=500, now_ts=100
+    )
+    eng.expire(s_exp.session_id, now_ts=100 + 86400)
+    assert s_exp.state == "EXPIRED"
+    assert eng.pushed_balances["did:ethr:0xPlatA"] == 500
+
+    s_rej = eng.open_session(
+        "0xwork_s4", "did:ethr:0xCreator", "did:ethr:0xPlatB", tb, "did:ethr:0xCreator", escrow_wei=300, now_ts=200
+    )
+    eng.reject(s_rej.session_id, caller_did="did:ethr:0xPlatB", now_ts=210)
+    assert s_rej.state == "REJECTED"
+    assert eng.pushed_balances["did:ethr:0xPlatB"] == 300
+
+    # Negotiated royalty 2000 bps (20%) scales co-creator shares (not 7000 bps) + refunds excess escrow
+    s_acc = eng.open_session(
+        "0xwork_s4", "did:ethr:0xCreator", "did:ethr:0xPlatC", tb, "did:ethr:0xCreator", escrow_wei=150, now_ts=300
+    )
+    plt_c = eng.accept(s_acc.session_id, "did:ethr:0xPlatC", 1, tb.terms_hash(), now_ts=310)
+    assert eng.pushed_balances["did:ethr:0xPlatC"] == 50  # 150 escrowed - 100 fee = 50 refunded
+    rec_c = eng.distribute_royalty(plt_c.plt_id, 10_000, "GR", tickets_count=2, now_ts=320)
+    assert rec_c["creator_total_wei"] == 2_000
+    assert rec_c["platform_amount_wei"] == 8_000
+    assert rec_c["wei_conserved"] is True
+
+    # Negative or zero tickets_count MUST be rejected
+    with pytest.raises(ValueError):
+        eng.distribute_royalty(plt_c.plt_id, 10_000, "GR", tickets_count=-5, now_ts=330)
+    with pytest.raises(ValueError):
+        eng.distribute_royalty(plt_c.plt_id, 10_000, "GR", tickets_count=0, now_ts=330)
+
+    # Concurrent exclusive sessions cannot both mint exclusive PLTs
+    eng_ex = BilateralNegotiationEngine()
+    eng_ex.register_work("0xwork_ex", "did:ethr:0xCreator")
+    tb_ex = TermBundle(5000, 0, 86400, encode_territories(["GR"]), True, 10)
+    sx1 = eng_ex.open_session(
+        "0xwork_ex", "did:ethr:0xCreator", "did:ethr:0xP1", tb_ex, "did:ethr:0xCreator", now_ts=10
+    )
+    sx2 = eng_ex.open_session(
+        "0xwork_ex", "did:ethr:0xCreator", "did:ethr:0xP2", tb_ex, "did:ethr:0xCreator", now_ts=11
+    )
+    eng_ex.accept(sx1.session_id, "did:ethr:0xP1", 1, tb_ex.terms_hash(), now_ts=20)
+    with pytest.raises(ValueError, match="ExclusivityConflict"):
+        eng_ex.accept(sx2.session_id, "did:ethr:0xP2", 1, tb_ex.terms_hash(), now_ts=21)
+
+    # 2. RFC 6962 Merkle Tree & P3 Privilege-Gap Circuit Breaker
+    leaves = [merkle_leaf_hash(f"event-{i}".encode("utf-8")) for i in range(7)]
+    root = compute_merkle_root(leaves)
+    for idx in range(len(leaves)):
+        prf = generate_merkle_proof(leaves, idx)
+        assert verify_merkle_proof(leaves[idx], prf, root, leaf_index=idx, tree_size=len(leaves)) is True
+        assert verify_merkle_proof(leaves[(idx + 1) % len(leaves)], prf, root) is False
+    # Malformed empty digests and interior-node proof shortening forgery MUST fail closed
+    assert verify_merkle_proof("", [], "") is False
+    leaves4 = [merkle_leaf_hash(f"n-{i}".encode("utf-8")) for i in range(4)]
+    root4 = compute_merkle_root(leaves4)
+    inner_01 = merkle_node_hash(leaves4[0], leaves4[1])
+    inner_23 = merkle_node_hash(leaves4[2], leaves4[3])
+    assert (
+        verify_merkle_proof(inner_01, [{"position": "right", "hash": inner_23}], root4, leaf_index=0, tree_size=4)
+        is False
+    )
+
+    # Un-declassified privilege jump (0.10 -> 0.90 > tau_gap=0.35) AND self-declassification MUST trip P3 circuit breaker
+    bad_trace = [
+        {"id": "s0:untrusted_caption", "privilege": 0.10, "h_in": "h0", "h_out": "h1", "declassified": False},
+        {"id": "s1:confused_deputy_core", "privilege": 0.90, "h_in": "h1", "h_out": "h2", "declassified": True},
+    ]
+    p3_bad = verify_p3_provenance_trace(bad_trace, tau_gap=0.35)
+    assert p3_bad["valid"] is False
+    assert p3_bad["circuit_breaker_tripped"] is True
+    assert (
+        verify_p3_provenance_trace([{"id": "s0", "privilege": 0.1}, {"id": "s1", "privilege": 0.2}])["valid"] is False
+    )
+    assert (
+        verify_p3_provenance_trace(
+            [
+                {"id": "s0", "privilege": 0.1, "h_in": "aa", "h_out": "bb"},
+                {"id": "s1", "privilege": float("nan"), "h_in": "bb", "h_out": "cc"},
+            ]
+        )["valid"]
+        is False
+    )
+
+    # Anchor attestation to isolated tmp files & verify chain integrity + tamper detection
+    from sovereign_kb.chain import solve_discrete_lyapunov_2x2, verify_chain_anchors
+
+    ledger_p = tmp_path / "triad.jsonl"
+    anchors_p = tmp_path / "anchors.jsonl"
+    anc1 = anchor_organon_attestation(target_dir=tmp_path, ledger_file=ledger_p, anchors_file=anchors_p)
+    anc2 = anchor_organon_attestation(target_dir=tmp_path, ledger_file=ledger_p, anchors_file=anchors_p)
+    assert anc1["inclusion_proof_verified"] is True
+    assert anc1["p3_provenance"]["valid"] is True
+    assert anc2["prev_anchor_hash"] == anc1["anchor_hash"]
+    ok_chain, cnt_chain, _ = verify_chain_anchors(anchors_p)
+    assert ok_chain is True and cnt_chain == 2
+
+    # 3. PhD Tokenomics & Antifragility
+    tok = run_tokenomics_suite()
+    assert tok["single_agent_monopoly_optimum"]["optimal_price"] == 10
+    assert tok["duopoly_nash_equilibrium"]["ne_price"] == 8
+    assert tok["duopoly_nash_equilibrium"]["verified_unique_on_grid"] is True
+    assert tok["egt_replicator"]["converged_to_ne_8"] is True
+    assert tok["nash_q_collusion_audit"]["regime"] == "SUPRA_COMPETITIVE_TACIT_COLLUSION"
+    assert (
+        tok["pid_mpc_control"]["rmse_mpc"]
+        < tok["pid_mpc_control"]["rmse_pid"]
+        < tok["pid_mpc_control"]["rmse_uncontrolled"]
+    )
+    assert tok["pid_mpc_control"]["lyapunov_certificate"]["schur_stable"] is True
+    assert tok["pid_mpc_control"]["lyapunov_certificate"]["positive_definite_p"] is True
+
+    # Exact 3x3 Lyapunov solver accuracy at rho=0.999 and invariant bound on diag(0.9, 0)
+    lya_near1 = solve_discrete_lyapunov_2x2([[0.999, 0.0], [0.0, 0.5]])
+    assert abs(lya_near1["p_matrix"][0][0] - (1.0 / (1.0 - 0.999**2))) < 1e-3
+    lya_diag = solve_discrete_lyapunov_2x2([[0.9, 0.0], [0.0, 0.0]], [[1.0, 0.0], [0.0, 1.0]], w_max=0.05)
+    assert lya_diag["ultimate_bound_sq"] >= 0.25
+
+    # Bandwidth tripartite regimes: universal (including boundary k_b == f_min), conditional, fragile
+    f_min_exact = 2.0 / 1.2
+    assert evaluate_antifragile_curving_and_ami(k_b=1.0)["bandwidth_adaptation"]["regime"] == "UNIVERSAL_ANTIFRAGILE"
+    assert (
+        evaluate_antifragile_curving_and_ami(k_b=f_min_exact)["bandwidth_adaptation"]["regime"]
+        == "UNIVERSAL_ANTIFRAGILE"
+    )
+    assert evaluate_antifragile_curving_and_ami(k_b=3.0)["bandwidth_adaptation"]["regime"] == "CONDITIONAL_ANTIFRAGILE"
+    assert evaluate_antifragile_curving_and_ami(k_b=6.0)["bandwidth_adaptation"]["regime"] == "FRAGILE"
+
+    # 4. PhD Software Aristocracy & CLI dispatch
+    ari = audit_organon_aristocracy(ledger_file=ledger_p, anchors_file=anchors_p)
+    assert ari["metrics"]["is_software_aristocracy"] is True
+    assert ari["blast_radius_bound"]["bound_satisfied"] is True
+    assert ari["all_principles_passed"] is True
+
+    main(["chain", "status", "--json"])
+    cli_out = json.loads(capsys.readouterr().out)
+    assert cli_out["protocol_version"] == "1.0.0"

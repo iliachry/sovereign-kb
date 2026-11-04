@@ -133,7 +133,8 @@ skb dashboard --export
 | Print your Tier-0 profile (`00-identity/README-me.md` + `01-now/now.md`) | `skb me` |
 | Print zero-context-tax Creative Mode Resumption Packet(s) (`all`, `math`, `compute`, `spatial`, `writing`) | `skb resume math` |
 | Show vault & index status | `skb status` |
-| Run the Unified Sovereign Organon CLI (`organon status`, `organon showcase`, `organon task`, `organon finish`, `organon sync-state`) | `organon status --all-nodes` |
+| Run the Unified Sovereign Organon CLI (`organon status`, `organon showcase`, `organon task`, `organon finish`, `organon sync-state`, `organon chain`) | `organon status --all-nodes` |
+| Run Pistis On-Chain Bilateral Negotiation, RFC 6962 Merkle Anchor, PhD Tokenomics & Software Aristocracy (`skb chain` / `organon chain`) | `organon chain full-suite` |
 
 ---
 
