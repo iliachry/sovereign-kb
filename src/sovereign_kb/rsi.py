@@ -92,12 +92,6 @@ CANONICAL_BENCHMARK_PROBES: list[dict[str, str]] = [
         "target_path": "02-operating-system/rust-systems-reference.md",
         "target_heading": "RUST-CERT-18",
     },
-    {
-        "id": "PROBE-SYN-13",
-        "query": "Episode 13 The Lyapunov Objective of the Knowledge Base MRR NDCG separation margin",
-        "target_path": "00-identity/syneidesis-theory-of-consciousness.md",
-        "target_heading": "Episode 13",
-    },
 ]
 
 CANONICAL_HELDOUT_PROBES: list[dict[str, str]] = [
@@ -127,13 +121,6 @@ CANONICAL_HELDOUT_PROBES: list[dict[str, str]] = [
         "query": "clone duplication ceiling dead export hygiene proprietary code sizing",
         "target_path": "02-operating-system/codebase-governance-and-sizing.md",
         "target_heading": "",
-        "split": "heldout",
-    },
-    {
-        "id": "HELDOUT-SYN-13",
-        "query": "Syneidesis Episode 13 Aleksandr Lyapunov inverted bowl seventy-six cycles non-regression",
-        "target_path": "00-identity/syneidesis-theory-of-consciousness.md",
-        "target_heading": "Episode 13",
         "split": "heldout",
     },
 ]
