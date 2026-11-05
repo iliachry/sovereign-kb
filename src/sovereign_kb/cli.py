@@ -3948,6 +3948,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     )
 
     from sovereign_kb.chain import register_chain_subparser
+    from sovereign_kb.evr import register_evr_subparser
     from sovereign_kb.gwi import register_gwi_subparser
     from sovereign_kb.sessions import register_sessions_subparser
     from sovereign_kb.soar import register_soar_subparser
@@ -3958,6 +3959,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     register_sessions_subparser(sub, show_all_aliases=show_all_aliases)
     register_chain_subparser(sub, show_all_aliases=show_all_aliases)
     register_video_subparser(sub, show_all_aliases=show_all_aliases)
+    register_evr_subparser(sub, show_all_aliases=show_all_aliases)
     return parser
 
 
@@ -4324,6 +4326,10 @@ def main(argv: list[str] | None = None) -> None:
         from sovereign_kb.chain import cmd_chain
 
         cmd_chain(args)
+    elif args.cmd in ("evr", "everything"):
+        from sovereign_kb.evr import cmd_evr
+
+        cmd_evr(args)
     elif args.cmd == "git-sync":
         args.mode = "sync"
         cmd_git_sync(args)

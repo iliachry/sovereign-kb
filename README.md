@@ -128,14 +128,15 @@ skb dashboard --export
 | Ask a synthesized question via local Ollama / OpenAI-compatible LLM | `skb ask "How do we handle CORS?"` |
 | Re-index modified Markdown files | `skb sync` |
 | Run the 6-Gate Vault Doctor (`--heal` to auto-fix frontmatter & orphans) | `skb verify` |
-| Atomically pull, sync, verify, commit, and push vault changes to Git | `skb push -m "docs: update notes"` |
+| Atomically pull, sync, verify, commit, and push vault changes to Git (`skb pull`, `skb git-sync`, `skb push`) | `skb push -m "docs: update notes"` |
 | Open the interactive `[[Wikilink]]` Knowledge Graph dashboard | `skb dashboard` |
 | Print your Tier-0 profile (`00-identity/README-me.md` + `01-now/now.md`) | `skb me` |
 | Print zero-context-tax Creative Mode Resumption Packet(s) (`all`, `math`, `compute`, `spatial`, `writing`) | `skb resume math` |
 | Show vault & index status | `skb status` |
 | Run Autonomous Human-Like Video Playback Audit (native `.mp4` stream to Bedrock Nova Pro + Triad keyframes) | `skb video audit artifacts/walkthrough_compressed.mp4` |
-| Run the Unified Sovereign Organon CLI (`organon status`, `organon showcase`, `organon task`, `organon finish`, `organon sync-state`, `organon chain`) | `organon status --all-nodes` |
+| Run the Unified Sovereign Organon CLI (`organon status`, `organon showcase`, `organon task`, `organon finish`, `organon sync-state`, `organon chain`, `organon evr`) | `organon status --all-nodes` |
 | Run Pistis On-Chain Bilateral Negotiation, RFC 6962 Merkle Anchor, PhD Tokenomics & Software Aristocracy (`skb chain` / `organon chain`) | `organon chain full-suite` |
+| Pack, inspect, search, query via SQL, zero-copy `mmap` tensors, and Merkle-verify `.evr` ("Everything" v1.0) capsules (`evr`, `skb evr`, `organon evr`) | `evr bench` |
 
 ---
 

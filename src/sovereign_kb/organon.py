@@ -47,6 +47,7 @@ from .chain import (
     collect_pistis_summary,
     register_chain_subparser,
 )
+from .evr import cmd_evr, register_evr_subparser
 from .gwi import GWI_STANDARD_VERSION
 from .sessions import _get_cluster_env
 
@@ -835,11 +836,16 @@ def main_cli(argv: list[str] | None = None) -> None:
     p_fin.add_argument("--skip-push", action="store_true", help="Do not run `kb push` even if -m is provided")
 
     register_chain_subparser(sub, show_all_aliases=True)
+    register_evr_subparser(sub, show_all_aliases=True)
 
     parsed = parser.parse_args(args_list)
 
     if parsed.subcmd in ("chain", "pistis", "blockchain"):
         cmd_chain(parsed)
+        return
+
+    if parsed.subcmd in ("evr", "everything"):
+        cmd_evr(parsed)
         return
 
     if parsed.subcmd == "status":

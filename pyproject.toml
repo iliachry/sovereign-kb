@@ -59,6 +59,7 @@ sovereign-kb = "sovereign_kb.cli:main"
 skb = "sovereign_kb.cli:main"
 gwi = "sovereign_kb.gwi:main_cli"
 organon = "sovereign_kb.organon:main_cli"
+evr = "sovereign_kb.evr:main_cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sovereign_kb"]
