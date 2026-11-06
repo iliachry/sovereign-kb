@@ -28,6 +28,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 try:
     import tomllib
@@ -72,7 +73,7 @@ def _tree(repo: Path, sha: str) -> tuple[set[str], set[str]]:
 
 
 def _exists(path: str, files: set[str], dirs: set[str]) -> bool:
-    p = os.path.normpath(path).lstrip("/")
+    p = os.path.normpath(unquote(path)).lstrip("/")
     return p in files or p in dirs or p == "."
 
 
