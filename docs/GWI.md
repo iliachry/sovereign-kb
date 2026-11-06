@@ -54,6 +54,15 @@ To eliminate AI kitchen-sink bloat (`M1`–`M7`), structural irregularity, cogni
 
 ## 3. CLI Usage (`skb gwi` / `gwi` & `skb skills`)
 
+The Python module is the standalone CLI: use `uv run python -m sovereign_kb.gwi audit . --strict`.
+The package CLI includes the extra subcommand: `uv run skb gwi audit . --strict`.
+Run these from the repository root to select its `uv` environment.
+
+If an audit reports that existing governance files are missing, check **Target Project** first.
+A redundant leading `gwi` token (`python -m sovereign_kb.gwi gwi audit <dir>`) is now consumed as an alias
+rather than treated as a relative target path, and a nonexistent target exits with code `2`
+(`error: GWI target does not exist`) instead of scoring an empty tree as `G = 0.32 FAIL`.
+
 ```bash
 # Inspect all 8 Bi-Polar Craft Lenses (or active lenses for a specific repo)
 skb gwi lenses

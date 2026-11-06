@@ -7136,6 +7136,18 @@ def _configure_gwi_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
 
+def _require_existing_target(target: Path) -> None:
+    """Refuse to audit a phantom target: a missing path would otherwise score as an empty tree (G=0.32 FAIL)."""
+    if target.exists():
+        return
+    print(
+        f"error: GWI target does not exist: {target}\n"
+        "       (hint: pass a directory, `.tex`, or `.mp4` path; `gwi audit <dir>` — the `gwi` alias is not a target)",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def cmd_gwi(args: argparse.Namespace) -> None:
     """Execute `skb gwi` / standalone `gwi` commands."""
     from .audit_registry import (
@@ -7151,6 +7163,10 @@ def cmd_gwi(args: argparse.Namespace) -> None:
 
     subcmd = getattr(args, "gwi_subcmd", "audit") or "audit"
     rest = list(getattr(args, "gwi_args", []) or [])
+    # Tolerate redundant alias tokens (`gwi gwi audit <dir>`, `python -m sovereign_kb.gwi gwi audit <dir>`)
+    # so the alias is never mistaken for a target path.
+    while subcmd in ("gwi", "goldwood") and rest:
+        subcmd = rest.pop(0)
     theta = float(getattr(args, "theta", DEFAULT_THETA))
     k = float(getattr(args, "k", DEFAULT_K))
 
@@ -7172,6 +7188,9 @@ def cmd_gwi(args: argparse.Namespace) -> None:
     if subcmd not in valid_subcmds:
         rest = [subcmd, *rest]
         subcmd = "audit"
+
+    if subcmd in ("audit", "status", "history", "subprojects", "record-triad") and rest:
+        _require_existing_target(Path(rest[0]).expanduser())
 
     if subcmd == "record-triad":
         target_p = Path(rest[0]).expanduser().resolve() if rest else Path.cwd().resolve()

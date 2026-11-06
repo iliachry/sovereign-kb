@@ -914,6 +914,21 @@ def test_tri_council_skb_rsi_gwi_chunkstore_and_bridge_upgrades(
     assert math.isfinite(near_miss["raw_goldwood_g"])
 
 
+def test_gwi_cli_alias_token_and_phantom_target_guard(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`gwi gwi audit <dir>` must audit <dir> (not a phantom `./gwi`), and a missing target must exit 2, not score 0.32."""
+    from sovereign_kb.gwi import main_cli
+
+    main_cli(["gwi", "audit", str(REPO_ROOT), "--json"])
+    aliased = json.loads(capsys.readouterr().out)
+    assert aliased["target"] == str(REPO_ROOT)
+    assert aliased["calculation"]["status"] == "PASS"
+
+    with pytest.raises(SystemExit) as exc:
+        main_cli(["audit", str(tmp_path / "does-not-exist"), "--json"])
+    assert exc.value.code == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
 def test_gwi_tri_council_all_12_counterexamples(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Verify all 12 Tri-Council (Argon x Fable x Astra) GWI v1.4.0 counterexamples and mathematical invariants."""
     from sovereign_kb.gwi import (
