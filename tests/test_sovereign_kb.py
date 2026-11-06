@@ -2980,3 +2980,108 @@ def test_evr_everything_file_format_f18(tmp_path: Path, capsys: pytest.CaptureFi
     main(["evr", "status", "--json"])
     skb_evr_out = json.loads(capsys.readouterr().out)
     assert skb_evr_out["alignment_bytes"] == 64
+
+    # 6. Tri-Council Adversarial Hardening Regressions (A-1 .. A-14)
+    import hashlib
+    import math
+
+    from sovereign_kb.evr import SUPERBLOCK_STRUCT
+
+    # A-1: Reject path traversal, absolute paths, NUL bytes, __evr__/ spoofing, and duplicate paths
+    bad_b = EvrBuilder(title="Traversal")
+    for bad_p in ["../out_evil/pwn.txt", "/etc/passwd", "a/../../b.txt", "bad\x00name.txt", "__evr__/provenance.json"]:
+        with pytest.raises(ValueError):
+            bad_b.add_text(bad_p, "bad", kind=EvrKind.DOCUMENT)
+    bad_b.add_text("dup/item.txt", "first", kind=EvrKind.DOCUMENT)
+    with pytest.raises(ValueError, match="Duplicate"):
+        bad_b.add_text("dup/item.txt", "second", kind=EvrKind.DOCUMENT)
+
+    # A-2 & A-3: Required sign_key fails on unsigned archive, metadata/header/preamble tampering
+    with EvrReader(dedup_path) as r_unsigned:
+        unsig_ver = r_unsigned.verify(sign_key="required-key")
+        assert unsig_ver["valid"] is False
+        assert unsig_ver["signature_verified"] is False
+
+    # A-6 & A-7: XSS script-breakout escaping + f16/bf16 float fidelity + structural metadata lock
+    xss_title = "</ScRiPt><script>window.__evr_xss=1</script>"
+    f16_vals = [1.5, -0.25, 3.25, 0.0]
+    bf16_vals = [1.5, -2.0, 0.5, 4.0]
+    hard_path = tmp_path / "hardened.evr"
+    hb = EvrBuilder(title=xss_title, polyglot=True, sign_key="hard-key", created_unix_ns=1700000000000000000)
+    hb.add_text("docs/xss.md", f"Payload {xss_title} alignment", kind=EvrKind.DOCUMENT)
+    hb.add_tensor(
+        "tensors/f16.tensor",
+        f16_vals,
+        dtype="f16",
+        shape=(2, 2),
+        metadata={"dtype": "f64", "shape": [99], "numel": 99, "custom_tag": "ok"},
+    )
+    hb.add_tensor("tensors/bf16.tensor", bf16_vals, dtype="bf16", shape=(4,))
+    with pytest.raises(ValueError, match="byte length"):
+        hb.add_tensor("tensors/bad_raw.tensor", b"\x00\x01\x02", dtype="f32", shape=(4,))
+    hb.write(hard_path)
+
+    raw_hard = hard_path.read_bytes()
+    assert b"</ScRiPt>" not in raw_hard[: raw_hard.index(b"EVR\x01")]
+
+    with EvrReader(hard_path) as hr:
+        assert hr.verify(sign_key="hard-key")["valid"] is True
+        assert hr.verify(sign_key="wrong-key")["valid"] is False
+
+        t_f16 = hr.read_tensor("tensors/f16.tensor")
+        assert t_f16["dtype"] == "f16"
+        assert t_f16["shape"] == [2, 2]
+        assert t_f16["numel"] == 4
+        for got, exp in zip(t_f16["values"], f16_vals):
+            assert math.isclose(got, exp, rel_tol=1e-3, abs_tol=1e-3)
+
+        t_bf16 = hr.read_tensor("tensors/bf16.tensor")
+        assert t_bf16["dtype"] == "bf16"
+        for got, exp in zip(t_bf16["values"], bf16_vals):
+            assert math.isclose(got, exp, rel_tol=1e-2, abs_tol=1e-2)
+
+        # A-8: FTS5 virtual table query & SQLite read-only authorizer blocking ATTACH / writes
+        fts_rows = hr.sql("SELECT path FROM evr_fts WHERE evr_fts MATCH 'alignment';")
+        assert len(fts_rows) == 1 and fts_rows[0]["path"] == "docs/xss.md"
+        with pytest.raises(ValueError, match="Read-only SQLite"):
+            hr.sql("ATTACH DATABASE ':memory:' AS pwn;")
+
+        # A-2/A-3/A-4: Tamper with binary TOC byte -> fails both Python verify() and Rust verifier
+        sb_off = hr.superblock_offset
+        toc_off = hr.toc_offset
+        tampered_toc = bytearray(raw_hard)
+        tampered_toc[toc_off + 96] ^= 0xFF  # flip short_name byte in binary TOC
+        assert EvrReader(bytes(tampered_toc)).verify(sign_key="hard-key")["valid"] is False
+
+        # Tamper with polyglot preamble byte -> fails signature verification when sign_key is provided
+        tampered_pre = bytearray(raw_hard)
+        tampered_pre[10] = ord("X") if tampered_pre[10] != ord("X") else ord("Y")
+        assert EvrReader(bytes(tampered_pre)).verify(sign_key="hard-key")["valid"] is False
+
+    # A-9 & A-10: Deterministic bit-for-bit builds & symlink skipping in add_path
+    det1 = EvrBuilder(title="Det", polyglot=False, created_unix_ns=0)
+    det1.add_text("a.txt", "hello deterministic world", kind=EvrKind.DOCUMENT)
+    det2 = EvrBuilder(title="Det", polyglot=False, created_unix_ns=0)
+    det2.add_text("a.txt", "hello deterministic world", kind=EvrKind.DOCUMENT)
+    assert hashlib.sha256(det1.build_bytes()).digest() == hashlib.sha256(det2.build_bytes()).digest()
+
+    sym_dir = tmp_path / "sym_src"
+    sym_dir.mkdir()
+    (sym_dir / "real.txt").write_text("real file", encoding="utf-8")
+    (sym_dir / "leak.txt").symlink_to(hard_path)
+    sym_b = EvrBuilder(title="SymTest", polyglot=False)
+    sym_b.add_path(sym_dir)
+    assert len(sym_b._specs) == 1
+
+    # A-12: Rust verifier rejects hostile out-of-bounds superblock offsets without panicking
+    hostile_path = tmp_path / "hostile.evr"
+    bad_sb = bytearray(raw_hard)
+    sb_vals = list(SUPERBLOCK_STRUCT.unpack_from(bad_sb, sb_off))
+    sb_vals[7] = 1 << 62  # huge toc_offset
+    sb_vals[10] = 0
+    SUPERBLOCK_STRUCT.pack_into(bad_sb, sb_off, *sb_vals)
+    sb_vals[10] = __import__("zlib").crc32(bad_sb[sb_off : sb_off + 56]) & 0xFFFFFFFF
+    SUPERBLOCK_STRUCT.pack_into(bad_sb, sb_off, *sb_vals)
+    hostile_path.write_bytes(bytes(bad_sb))
+    hostile_rust = verify_rust_evr_interop(hostile_path)
+    assert hostile_rust["valid"] is False

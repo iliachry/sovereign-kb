@@ -23,7 +23,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
 DEFAULT_PROMPT = """You are conducting an autonomous human-like playback audit of this video deliverable.
 Act as a strict, expert human director and reviewer who is watching the video playback from beginning to end.
 
@@ -63,7 +62,7 @@ def audit_video_playback_native(
     for end-to-end human playback inspection.
     """
     _ensure_bedrock_env()
-    
+
     if not video_path.is_file():
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
@@ -80,10 +79,7 @@ def audit_video_playback_native(
         raise RuntimeError("`boto3` is required for Bedrock native video playback audit. Run `uv pip install boto3`.")
 
     active_region = (
-        region_name
-        or os.environ.get("AWS_DEFAULT_REGION")
-        or os.environ.get("AWS_REGION")
-        or "eu-central-1"
+        region_name or os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "eu-central-1"
     )
     client = boto3.client("bedrock-runtime", region_name=active_region)
     active_prompt = prompt or DEFAULT_PROMPT
@@ -153,9 +149,12 @@ def extract_timeline_snapshots(
     # Get duration
     cmd_dur = [
         ffprobe_bin,
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         str(video_path),
     ]
     try:
@@ -172,10 +171,14 @@ def extract_timeline_snapshots(
         cmd = [
             ffmpeg_bin,
             "-y",
-            "-ss", str(t_sec),
-            "-i", str(video_path),
-            "-vframes", "1",
-            "-q:v", "2",
+            "-ss",
+            str(t_sec),
+            "-i",
+            str(video_path),
+            "-vframes",
+            "1",
+            "-q:v",
+            "2",
             str(out_frame),
         ]
         res = subprocess.run(cmd, capture_output=True)
@@ -233,9 +236,7 @@ def cmd_video_audit(args: argparse.Namespace) -> None:
     if target.is_dir():
         # Find primary mp4
         candidates = sorted(
-            list(target.glob("*.mp4"))
-            + list(target.glob("artifacts/*.mp4"))
-            + list(target.glob("docs/**/*.mp4")),
+            list(target.glob("*.mp4")) + list(target.glob("artifacts/*.mp4")) + list(target.glob("docs/**/*.mp4")),
             key=lambda p: p.stat().st_size,
             reverse=True,
         )
@@ -248,8 +249,10 @@ def cmd_video_audit(args: argparse.Namespace) -> None:
     else:
         target_video = target
 
-    print(f"🎬 Sovereign Video Playback Audit: {target_video.name} ({target_video.stat().st_size / 1024 / 1024:.2f} MB)")
-    
+    print(
+        f"🎬 Sovereign Video Playback Audit: {target_video.name} ({target_video.stat().st_size / 1024 / 1024:.2f} MB)"
+    )
+
     mode = getattr(args, "mode", "native")
     result: Dict[str, Any] = {}
 
@@ -274,7 +277,7 @@ def cmd_video_audit(args: argparse.Namespace) -> None:
             num_frames=getattr(args, "frames", 12),
         )
         result["triad_keyframes"] = triad_res
-        print(f"\n=== Triad (Fable 5.1 x Astra) Evaluation ===")
+        print("\n=== Triad (Fable 5.1 x Astra) Evaluation ===")
         print(triad_res["triad_output"][:1200] + ("..." if len(triad_res["triad_output"]) > 1200 else ""))
         print(f"\nTriad Verdict: {triad_res['verdict']}")
 
@@ -303,7 +306,7 @@ def register_video_subparser(subparsers: argparse._SubParsersAction, show_all_al
         help="Autonomous human-like video playback auditor (native video stream + triad keyframes)",
     )
     v_sub = p.add_subparsers(dest="video_subcmd")
-    
+
     p_audit = v_sub.add_parser("audit", help="Run cognitive playback audit on a video file or project")
     p_audit.add_argument("target", help="Path to video file (.mp4) or project directory")
     p_audit.add_argument(
