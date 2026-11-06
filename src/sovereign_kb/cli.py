@@ -1354,6 +1354,7 @@ def hybrid_retrieve(
     w_fts_solo = float(active_policy.get("w_fts_solo", 1.0))
     w_vec = float(active_policy.get("w_vec", 1.20))
     exact_id_boost = float(active_policy.get("exact_id_boost", 0.025))
+    episodic_dampening = float(active_policy.get("episodic_dampening", 0.55))
     graph_1hop_boost = float(active_policy.get("graph_1hop_boost", 1.15))
     graph_neighbor_lead = float(active_policy.get("graph_neighbor_lead_factor", 0.28))
 
@@ -1361,6 +1362,12 @@ def hybrid_retrieve(
     query_terms = list(dict.fromkeys(fold_accents(t) for t in re.findall(r"\w+", query) if len(t) >= 2))
     for cid, c in chunk_map.items():
         score = 0.0
+        doc_t = str(doc_meta.get(c["rel_path"], {}).get("doc_type", "")).lower()
+        is_ep_or_ledger = (
+            doc_t in ("episodic", "rsi-ledger", "distillation-ledger")
+            or c["rel_path"].startswith("04-episodic/")
+            or c["rel_path"] == "02-operating-system/autonomous-rsi-distillations.md"
+        )
         if engine == "hips":
             if cid in hips_ranks:
                 score += 2.0 / (k_rrf + hips_ranks[cid])
@@ -1377,7 +1384,8 @@ def hybrid_retrieve(
             haystack = f"{c['rel_path']} {c['heading_path']} {c['content']}".lower()
             matched_ids = sum(1 for eid in exact_identifiers if eid in haystack)
             if matched_ids > 0:
-                score += exact_id_boost * matched_ids
+                id_mult = 0.35 if (is_ep_or_ledger and (doc_type_filter or "").lower() != "episodic") else 1.0
+                score += exact_id_boost * matched_ids * id_mult
                 if cid not in fts_ranks:
                     fts_ranks[cid] = 1
 
@@ -1389,7 +1397,6 @@ def hybrid_retrieve(
                 score += 0.008 * cov_ratio + (0.006 if cov_ratio >= 0.999 else 0.0)
 
         if score > 0:
-            doc_t = str(doc_meta.get(c["rel_path"], {}).get("doc_type", "")).lower()
             if doc_t in (
                 "identity",
                 "operating-system",
@@ -1397,6 +1404,7 @@ def hybrid_retrieve(
                 "venture",
                 "research",
                 "life-domain",
+                "domain",
                 "moc",
                 "decision",
             ):
@@ -1405,6 +1413,11 @@ def hybrid_retrieve(
                 c["rel_path"] == "02-operating-system/autonomous-rsi-distillations.md"
             ):
                 score *= 0.60
+            elif doc_t == "episodic" or c["rel_path"].startswith("04-episodic/"):
+                if (doc_type_filter or "").lower() == "episodic" or "episodic" in query_terms:
+                    score *= 1.20
+                else:
+                    score *= episodic_dampening
             rrf_scores[cid] = score
 
     top_initial_docs: list[str] = []
@@ -2876,6 +2889,28 @@ def cmd_git_sync(args) -> None:
                 text=True,
                 check=True,
             ).stdout.strip()
+            if (
+                status
+                and not getattr(args, "no_rsi", False)
+                and ((vault_dir / ".kb" / "rsi-ledger.jsonl").is_file() or (vault_dir / "04-episodic").is_dir())
+            ):
+                cmd_rsi(
+                    argparse.Namespace(
+                        vault=str(vault_dir),
+                        cmd="rsi",
+                        rsi_cmd="cycle",
+                        json=False,
+                        use_llm=False,
+                        verify_rust=False,
+                        no_embed=_is_vault_no_embed(vault_dir),
+                    )
+                )
+                status = subprocess.run(
+                    ["git", "-C", str(vault_dir), "status", "--porcelain"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
             if status:
                 subprocess.run(["git", "-C", str(vault_dir), "add", "-A"], check=True)
                 try:
@@ -3139,7 +3174,8 @@ def cmd_rsi(args) -> None:
             print(
                 f"  Active Policy     : k_rrf={policy['k_rrf']}, w_hips={policy['w_hips']}, "
                 f"w_fts={policy['w_fts_with_hips']}, w_vec={policy['w_vec']}, "
-                f"id_boost={policy['exact_id_boost']}, graph_boost={policy['graph_1hop_boost']}"
+                f"id_boost={policy['exact_id_boost']}, ep_damp={policy.get('episodic_dampening', 0.55)}, "
+                f"graph_boost={policy['graph_1hop_boost']}"
             )
             print(f"  Ledger Integrity  : {'PASS' if chain_ok else 'FAIL'} ({count} SHA-256 chained cycles)")
             if entries:
@@ -3839,13 +3875,17 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
 
     p_gsync = sub.add_parser(
         "git-sync",
-        **({"help": "Pull, re-index, commit & push vault changes to Git remote"} if show_all_aliases else {}),
+        **({"help": "Pull, re-index, run RSI, commit & push vault changes to Git remote"} if show_all_aliases else {}),
     )
     p_gsync.add_argument("-m", "--message", help="Custom commit message")
+    p_gsync.add_argument("--no-rsi", action="store_true", help="Skip automatic RSI cycle before committing")
 
     sub.add_parser("pull", **({"help": "Git pull & re-index vault"} if show_all_aliases else {}))
-    p_push = sub.add_parser("push", **({"help": "Commit, push & sync vault to Git remote"} if show_all_aliases else {}))
+    p_push = sub.add_parser(
+        "push", **({"help": "Run RSI, commit, push & sync vault to Git remote"} if show_all_aliases else {})
+    )
     p_push.add_argument("-m", "--message", help="Custom commit message")
+    p_push.add_argument("--no-rsi", action="store_true", help="Skip automatic RSI cycle before committing")
 
     sub.add_parser("me", help="Print Tier-0 identity & current focus")
     p_resume = sub.add_parser(

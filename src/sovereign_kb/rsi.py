@@ -38,6 +38,7 @@ DEFAULT_RETRIEVAL_POLICY: dict[str, Any] = {
     "w_fts_solo": 1.0,
     "w_vec": 1.20,
     "exact_id_boost": 0.025,
+    "episodic_dampening": 0.55,
     "graph_1hop_boost": 1.15,
     "graph_neighbor_lead_factor": 0.28,
     "bm25_weights": [1.5, 4.0, 1.5, 2.5, 3.0, 1.0, 1.0],
@@ -471,6 +472,11 @@ def tune_retrieval_policy(
     for graph_boost in (1.05, 1.12, 1.18, 1.25):
         cand = copy.deepcopy(best_policy)
         cand["graph_1hop_boost"] = graph_boost
+        _try_candidate(cand)
+
+    for ep_damp in (0.45, 0.55, 0.68):
+        cand = copy.deepcopy(best_policy)
+        cand["episodic_dampening"] = ep_damp
         _try_candidate(cand)
 
     # Evaluate held-out generalization probes strictly once after coordinate search completes (zero selection leakage)

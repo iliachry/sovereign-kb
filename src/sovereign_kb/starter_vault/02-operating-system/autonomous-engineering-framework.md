@@ -59,7 +59,7 @@ Before any walkthrough is recorded or any task is declared complete, a single de
 4. **Gate 4 — Production Bundle Compilation**: Full `vite build` / `next build` verifying clean chunk splitting and zero leaked env tokens.
 
 ### Pillar 4: Automated Video Walkthrough Pipeline (`record:walkthrough` & `record:cms`)
-Every repository implements a one-command headless recording pipeline (`npm run record:walkthrough` or `./scripts/pipeline/auto_walkthrough.sh`):
+Every repository implements a one-command headless recording pipeline (`npm run record:walkthrough` or `./scripts/pipeline/auto_walkthrough.sh`) combining **automated Playwright browser recording** with strict **console error assertions** (`pageErrors: 0`, `consoleErrors: 0`, `httpErrors: 0`):
 - **Cinematic & Real-Input Execution**:
   - Uses Playwright `--project=walkthrough-video` or headless Chromium + CDP frame streaming (`1920x1080`, `24fps`) with visual cursor/highlight helpers.
   - Supports both **Director Mode** (deterministic camera flights + scripted solver) and **Play Mode** (real keyboard/mouse/pointer events with zero auto-solve cheats).

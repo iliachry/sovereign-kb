@@ -362,6 +362,45 @@ def test_rsi_self_healing_consolidation_and_monotonic_tuning(
     ver_out = json.loads(capsys.readouterr().out)
     assert ver_out["status"] == "PASS", f"5-Gate Doctor failed after RSI cycle: {ver_out['violations']}"
 
+    # Verify canonical operating-system notes outrank raw episodic logs on shared queries unless --type episodic is set
+    main(
+        [
+            "--vault",
+            str(vault_dir),
+            "capture",
+            "Verified automated Playwright browser recording console error assertions in daily audit.",
+        ]
+    )
+    capsys.readouterr()
+    main(
+        [
+            "--vault",
+            str(vault_dir),
+            "search",
+            "automated Playwright browser recording console error assertions",
+            "-n",
+            "2",
+            "--json",
+        ]
+    )
+    ranked = json.loads(capsys.readouterr().out)["results"]
+    assert ranked[0]["rel_path"] == "02-operating-system/autonomous-engineering-framework.md"
+    main(
+        [
+            "--vault",
+            str(vault_dir),
+            "search",
+            "automated Playwright browser recording console error assertions",
+            "--type",
+            "episodic",
+            "-n",
+            "1",
+            "--json",
+        ]
+    )
+    ep_only = json.loads(capsys.readouterr().out)["results"]
+    assert ep_only[0]["rel_path"].startswith("04-episodic/")
+
 
 def test_usage_finops_telemetry(capsys: pytest.CaptureFixture[str]) -> None:
     """F-11: Verify `skb usage --native --no-gx10 --json` returns deterministic FinOps telemetry schema."""
