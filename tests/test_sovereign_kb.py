@@ -3085,3 +3085,86 @@ def test_evr_everything_file_format_f18(tmp_path: Path, capsys: pytest.CaptureFi
     hostile_path.write_bytes(bytes(bad_sb))
     hostile_rust = verify_rust_evr_interop(hostile_path)
     assert hostile_rust["valid"] is False
+
+    # 7. All 5 Strategic Portfolio Wedges + q4_0 Quantized Tensor Round-Trip
+    from sovereign_kb.evr import (
+        pack_digital_twin_snapshot,
+        pack_poetics_show_capsule,
+        pack_vault_knowledge_cartridge,
+        seal_gwi_audit_capsule,
+        seal_paper_reproducibility_capsule,
+    )
+
+    # q4_0 quantized tensor round-trip
+    q4_path = tmp_path / "q4_test.evr"
+    q4_b = EvrBuilder(title="Q4", polyglot=False)
+    q4_in = [-3.0, -1.5, 0.0, 1.5, 3.0, 2.25, -0.75, 0.5]
+    q4_b.add_tensor("tensors/q4.tensor", q4_in, shape=(2, 4), dtype="q4_0")
+    q4_b.write(q4_path)
+    with EvrReader(q4_path) as qr:
+        q4_out = qr.read_tensor("tensors/q4.tensor")
+        assert q4_out["dtype"] == "q4_0"
+        assert q4_out["strides"] == [4, 1]
+        for got, exp in zip(q4_out["values"], q4_in):
+            assert math.isclose(got, exp, abs_tol=0.05)
+
+    # Wedge 1: GWI Audit Seal + Pistis Chain Anchoring
+    gwi_proj = tmp_path / "gwi_sample"
+    gwi_proj.mkdir()
+    (gwi_proj / "README.md").write_text("# Sample Project\n", encoding="utf-8")
+    (gwi_proj / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    pistis_ledger = tmp_path / "pistis_evr.jsonl"
+    gwi_seal = seal_gwi_audit_capsule(
+        gwi_proj,
+        output_path=tmp_path / "goldwood.evr",
+        sign_key="gwi-seal-key",
+        anchor_pistis=True,
+        ledger_file=pistis_ledger,
+    )
+    assert gwi_seal["verification"]["valid"] is True
+    assert gwi_seal["pistis_chain_event"]["seq"] == 1
+    assert pistis_ledger.is_file()
+
+    # Wedge 2: Scientific Paper Reproducibility Capsule
+    paper_dir = tmp_path / "paper_sample"
+    paper_dir.mkdir()
+    (paper_dir / "main.tex").write_text(
+        "\\documentclass{article}\\begin{document}Hi\\end{document}\n", encoding="utf-8"
+    )
+    (paper_dir / "results.csv").write_text("method,acc\nour,98.4\n", encoding="utf-8")
+    paper_seal = seal_paper_reproducibility_capsule(
+        paper_dir, output_path=tmp_path / "paper_artifact.evr", sign_key="paper-key"
+    )
+    assert paper_seal["verification"]["valid"] is True
+    assert "\\newcommand{\\EvrMerkleRoot}" in paper_seal["latex_reproducibility_stamp"]
+
+    # Wedge 3: Sovereign Knowledge Cartridge (hips / xrOS / GX10)
+    starter_vault = Path(__file__).resolve().parent.parent / "src" / "sovereign_kb" / "starter_vault"
+    cartridge_seal = pack_vault_knowledge_cartridge(
+        starter_vault, output_path=tmp_path / "cartridge.evr", sign_key="vault-key"
+    )
+    assert cartridge_seal["verification"]["valid"] is True
+    assert cartridge_seal["notes_packed"] >= 5
+    with EvrReader(tmp_path / "cartridge.evr") as cr:
+        emb_t = cr.read_tensor("tensors/vault_embeddings_64d.tensor")
+        assert emb_t["aligned_64"] is True
+        assert emb_t["shape"] == [cartridge_seal["notes_packed"], 64]
+
+    # Wedge 4: Poetics LBVR / Pods Offline Show & Law L10 Session Capsule
+    show_seal = pack_poetics_show_capsule(output_path=tmp_path / "poetics_show.evr", sign_key="show-key")
+    assert show_seal["verification"]["valid"] is True
+    with EvrReader(tmp_path / "poetics_show.evr") as sr:
+        bio_t = sr.read_tensor("tensors/ble_biometrics_hr_hrv.tensor")
+        assert bio_t["shape"] == [16, 2]
+        cues = sr.sql("SELECT cue_id, lighting_preset FROM cue_timeline ORDER BY timestamp_ms;")
+        assert len(cues) == 3 and cues[0]["cue_id"] == "CUE_01"
+
+    # Wedge 5: NTUA 3D Digital Twin & 2D SWE Flood Snapshot
+    twin_seal = pack_digital_twin_snapshot(output_path=tmp_path / "twin.evr", sign_key="twin-key")
+    assert twin_seal["verification"]["valid"] is True
+    with EvrReader(tmp_path / "twin.evr") as tr:
+        swe_t = tr.read_tensor("tensors/swe_water_depth_m.tensor")
+        assert swe_t["aligned_64"] is True
+        assert swe_t["shape"] == [8, 8]
+        gauges = tr.sql("SELECT station_id, crs_epsg FROM gauge_stations;")
+        assert len(gauges) == 2 and gauges[0]["crs_epsg"] == "2100"

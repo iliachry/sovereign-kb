@@ -7089,6 +7089,13 @@ def _configure_gwi_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--write-evidence", action="store_true", help="Write `evidence/goldwood.json` in target directory"
     )
+    parser.add_argument(
+        "--seal",
+        nargs="?",
+        const="__DEFAULT__",
+        default="",
+        help="Seal the audit report + visual/media evidence into a tamper-evident `.evr` capsule (`evidence/goldwood.evr`) and anchor into Pistis Chain",
+    )
     parser.add_argument("--strict", action="store_true", help="Exit with code 1 if G(S) < 9.0 or any blocker is P0")
     parser.add_argument(
         "--strict-lenses",
@@ -7564,6 +7571,19 @@ def cmd_gwi(args: argparse.Namespace) -> None:
         ev_file = write_goldwood_evidence(target_path, report)
         report["evidence_file"] = str(ev_file)
 
+    seal_arg = getattr(args, "seal", "") or ""
+    if seal_arg and os.environ.get("GWI_IN_GATE_EXECUTION") != str(target_path.resolve()):
+        from .evr import seal_gwi_audit_capsule
+
+        seal_out = None if seal_arg == "__DEFAULT__" else seal_arg
+        evr_seal = seal_gwi_audit_capsule(target_path, output_path=seal_out, report=report)
+        report["evr_capsule"] = {
+            "path": evr_seal["path"],
+            "file_size_bytes": evr_seal["file_size_bytes"],
+            "merkle_root": evr_seal["merkle_root"],
+            "pistis_chain_event": evr_seal.get("pistis_chain_event"),
+        }
+
     if subcmd == "prompt":
         prompt_text = build_multi_model_prompt(report, agent=getattr(args, "agent", "astra"))
         if getattr(args, "json", False):
@@ -7598,6 +7618,9 @@ def cmd_gwi(args: argparse.Namespace) -> None:
         )
         if report.get("evidence_file"):
             print(f"    • Evidence Manifest : {report['evidence_file']}")
+        if report.get("evr_capsule"):
+            ec = report["evr_capsule"]
+            print(f"    • Sealed .evr Audit : {ec['path']} (merkle={ec['merkle_root'][:16]}...)")
 
     cl = report.get("craft_lenses") or {}
     if getattr(args, "strict", False) and (report["calculation"]["status"] != "PASS" or cl.get("veto_triggered")):
