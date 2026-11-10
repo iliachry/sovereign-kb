@@ -1064,12 +1064,41 @@ def run_rust_certification(
         rs_file.write_text(full_source_code, encoding="utf-8")
 
         c_t0 = time.perf_counter()
+        import os as _os
+
+        comp_env = dict(_os.environ)
         comp = subprocess.run(
             [rustc_bin, "--edition", "2021", "--test", "-D", "warnings", "-O", str(rs_file), "-o", str(bin_file)],
             capture_output=True,
             text=True,
             check=False,
+            env=comp_env,
         )
+        if comp.returncode != 0 and "tapi error" in (comp.stderr or ""):
+            sdk_root_dir = Path("/Library/Developer/CommandLineTools/SDKs")
+            for cand_sdk in sorted(sdk_root_dir.glob("MacOSX26*.sdk"), reverse=True):
+                if cand_sdk.is_dir():
+                    comp_env["SDKROOT"] = str(cand_sdk)
+                    comp = subprocess.run(
+                        [
+                            rustc_bin,
+                            "--edition",
+                            "2021",
+                            "--test",
+                            "-D",
+                            "warnings",
+                            "-O",
+                            str(rs_file),
+                            "-o",
+                            str(bin_file),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env=comp_env,
+                    )
+                    if comp.returncode == 0:
+                        break
         compile_ms = round((time.perf_counter() - c_t0) * 1000.0, 2)
         if comp.returncode != 0:
             raise RuntimeError(f"rustc compilation failed:\n{comp.stderr}")

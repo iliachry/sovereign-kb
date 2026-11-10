@@ -268,6 +268,148 @@ def record_gwi_outcome_feedback(
     return ev
 
 
+_LAW_LENS_TARGET_DOCS: dict[str, tuple[str, str]] = {
+    "L0": ("02-operating-system/subtractive-design-laws.md", "Law L0"),
+    "L1": ("02-operating-system/subtractive-design-laws.md", "Law L1"),
+    "L2": ("02-operating-system/subtractive-design-laws.md", "Law L2"),
+    "L3": ("02-operating-system/subtractive-design-laws.md", "Law L3"),
+    "L6": ("02-operating-system/subtractive-design-laws.md", "Law L6"),
+    "L7": ("02-operating-system/subtractive-design-laws.md", "Law L7"),
+    "L8": ("02-operating-system/subtractive-design-laws.md", "Law L8"),
+    "L9": ("02-operating-system/subtractive-design-laws.md", "Law L9"),
+    "ux-ergonomics": ("02-operating-system/subtractive-design-laws.md", "Law L7"),
+    "spatial-cinema": ("02-operating-system/autonomous-engineering-framework.md", "Pillar 4"),
+    "technical-artist": ("02-operating-system/goldwood-index-gwi-standard.md", "Craft Lenses"),
+    "typography-editor": ("02-operating-system/scientific-paper-framework.md", "Pillar 4"),
+    "principal-verification": ("02-operating-system/autonomous-engineering-framework.md", "Pillar 3"),
+    "chrysos-core": ("02-operating-system/goldwood-index-gwi-standard.md", "Goldwood"),
+}
+
+
+def swm_rsi_probes_path(vault_dir: Path) -> Path:
+    return Path(vault_dir) / ".kb" / "swm_rsi_probes.json"
+
+
+def load_swm_rsi_probes(vault_dir: Path) -> list[dict[str, str]]:
+    """Load distilled SWM Stage-5 self-healing retrieval probes from `.kb/swm_rsi_probes.json`."""
+    p = swm_rsi_probes_path(vault_dir)
+    if not p.is_file():
+        return []
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            return [
+                {
+                    "id": str(item.get("id", "")),
+                    "query": str(item.get("query", "")),
+                    "target_path": str(item.get("target_path", "")),
+                    "target_heading": str(item.get("target_heading", "")),
+                    "split": "heldout",
+                }
+                for item in raw
+                if isinstance(item, dict) and item.get("query") and item.get("target_path")
+            ]
+    except Exception:
+        pass
+    return []
+
+
+def register_swm_rsi_probe(
+    vault_dir: Path,
+    wp_id: int,
+    law: str,
+    lens: str,
+    description: str,
+    run_id: str = "",
+) -> dict[str, str]:
+    """
+    Distill a Stage-5 audit blocker resolution from `software-machine` into a held-out
+    retrieval benchmark probe in `.kb/swm_rsi_probes.json` for `skb rsi cycle`.
+    """
+    vdir = Path(vault_dir)
+    probes = load_swm_rsi_probes(vdir)
+    law_clean = (law or "L6").strip()
+    lens_clean = (lens or "chrysos-core").strip()
+    target_path, target_heading = _LAW_LENS_TARGET_DOCS.get(
+        law_clean.upper(),
+        _LAW_LENS_TARGET_DOCS.get(
+            lens_clean.lower(),
+            ("02-operating-system/autonomous-engineering-framework.md", "Pillar"),
+        ),
+    )
+    words = [w for w in "".join(c if c.isalnum() else " " for c in description).split() if len(w) >= 3][:6]
+    query_str = f"{law_clean} {lens_clean} {' '.join(words)}".strip()
+    probe_id = f"SWM-HELDOUT-{int(wp_id)}-{law_clean.upper()}"
+    new_probe = {
+        "id": probe_id,
+        "query": query_str,
+        "target_path": target_path,
+        "target_heading": target_heading,
+        "split": "heldout",
+        "run_id": str(run_id),
+    }
+    filtered = [p for p in probes if p.get("id") != probe_id]
+    filtered.append(new_probe)
+    out_p = swm_rsi_probes_path(vdir)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    out_p.write_text(json.dumps(filtered[-32:], indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return new_probe
+
+
+def record_swm_episodic_delivery(
+    vault_dir: Path,
+    run_id: str,
+    wp_id: int,
+    wp_subject: str,
+    repo_name: str,
+    commit_sha: str,
+    audit_score: int,
+    goldwood_g: float | None = None,
+    gitlab_mr_url: str | None = None,
+    date_str: str | None = None,
+) -> Path:
+    """
+    Append an idempotent, unstaged episodic delivery entry to `<vault_dir>/04-episodic/YYYY-MM-DD-log.md`
+    upon SHA-verified SWM merge completion.
+    """
+    vdir = Path(vault_dir)
+    day = date_str or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    ep_dir = vdir / "04-episodic"
+    ep_dir.mkdir(parents=True, exist_ok=True)
+    log_path = ep_dir / f"{day}-log.md"
+
+    if not log_path.is_file():
+        header = (
+            "---\n"
+            f'title: "Episodic Engineering Log — {day}"\n'
+            "type: episodic\n"
+            f"updated: {day}\n"
+            "tags: [episodic, log, swm, autonomous-engineering]\n"
+            "related:\n"
+            '  - "[[01-now/now]]"\n'
+            '  - "[[02-operating-system/autonomous-engineering-framework]]"\n'
+            '  - "[[02-operating-system/goldwood-index-gwi-standard]]"\n'
+            "---\n\n"
+            f"# Episodic Engineering Log — {day}\n\n"
+        )
+        log_path.write_text(header, encoding="utf-8")
+
+    existing = log_path.read_text(encoding="utf-8")
+    if run_id and run_id in existing:
+        return log_path
+
+    g_str = f", $\\mathcal{{G}} = {goldwood_g:.2f}$" if goldwood_g else ""
+    mr_str = f", MR: {gitlab_mr_url}" if gitlab_mr_url else ""
+    entry_block = (
+        f"\n## SWM Autonomous Delivery — `{run_id}` (`OP#{int(wp_id)}`)\n"
+        f"- **Work Package**: `OP#{int(wp_id)}` — *{wp_subject}*\n"
+        f"- **Repository & Revision**: `{repo_name}` (`{commit_sha}`{mr_str})\n"
+        f"- **Verification & Audit**: `APPROVED` (`{int(audit_score)}/100`{g_str}) via [[02-operating-system/autonomous-engineering-framework|Software Machine]] & [[02-operating-system/goldwood-index-gwi-standard|GWI+]]\n"
+    )
+    log_path.write_text(existing.rstrip() + "\n" + entry_block, encoding="utf-8")
+    return log_path
+
+
 def run_triad_end_to_end_canary(vault_dir: Path | None = None) -> dict[str, Any]:
     """
     Execute an isolated end-to-end Triad health canary verifying:
@@ -309,9 +451,13 @@ __all__ = [
     "default_triad_ledger_path",
     "evaluate_worktree_gwi",
     "format_production",
+    "load_swm_rsi_probes",
     "parse_soar",
     "record_gwi_outcome_feedback",
+    "record_swm_episodic_delivery",
+    "register_swm_rsi_probe",
     "retrieve_vault_precedents",
     "run_triad_end_to_end_canary",
+    "swm_rsi_probes_path",
     "verify_triad_provenance_chain",
 ]

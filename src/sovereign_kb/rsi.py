@@ -268,6 +268,16 @@ def split_benchmark_suite(
         except Exception:
             pass
 
+    try:
+        from sovereign_kb.bridge import load_swm_rsi_probes
+
+        for sp in load_swm_rsi_probes(vault_dir):
+            if sp.get("target_path") in existing_docs and sp["query"].lower() not in seen_q:
+                heldout_probes.append(dict(sp))
+                seen_q.add(sp["query"].lower())
+    except Exception:
+        pass
+
     for idx, p in enumerate(all_probes):
         if p["query"].lower() in seen_q:
             continue

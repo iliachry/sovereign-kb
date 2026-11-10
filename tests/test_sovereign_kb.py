@@ -3222,3 +3222,83 @@ def test_evr_everything_file_format_f18(tmp_path: Path, capsys: pytest.CaptureFi
         assert swe_t["shape"] == [8, 8]
         gauges = tr.sql("SELECT station_id, crs_epsg FROM gauge_stations;")
         assert len(gauges) == 2 and gauges[0]["crs_epsg"] == "2100"
+
+
+def test_swm_rsi_probe_distillation_and_episodic_delivery_bridge(tmp_path: Path) -> None:
+    """Verify Organon Upgrade 6: SWM -> SKB held-out RSI blocker probe distillation & idempotent episodic delivery logging."""
+    from sovereign_kb.bridge import (
+        load_swm_rsi_probes,
+        record_swm_episodic_delivery,
+        register_swm_rsi_probe,
+        swm_rsi_probes_path,
+    )
+    from sovereign_kb.rsi import split_benchmark_suite
+
+    vault = tmp_path / "organon-vault"
+    main(["init", str(vault), "--full", "--no-embed"])
+
+    # 1. Register distilled SWM Stage-5 blocker probes and verify idempotent deduplication
+    p1 = register_swm_rsi_probe(
+        vault_dir=vault,
+        wp_id=1766,
+        law="L7",
+        lens="ux-ergonomics",
+        description="Distinct font sizes exceeded 8 on dashboard header",
+        run_id="swm-op1766-a1",
+    )
+    assert p1["id"] == "SWM-HELDOUT-1766-L7"
+    assert p1["split"] == "heldout"
+    assert p1["target_path"] == "02-operating-system/subtractive-design-laws.md"
+    assert swm_rsi_probes_path(vault).is_file()
+
+    # Re-registering identical (wp_id, law) updates in place without duplicating
+    register_swm_rsi_probe(
+        vault_dir=vault,
+        wp_id=1766,
+        law="L7",
+        lens="ux-ergonomics",
+        description="Updated L7 regularity description",
+        run_id="swm-op1766-a2",
+    )
+    loaded = load_swm_rsi_probes(vault)
+    assert len(loaded) == 1
+    assert "Updated regularity description" in loaded[0]["query"]
+
+    # 2. Verify split_benchmark_suite automatically merges distilled SWM probes into heldout_probes
+    conn = get_db(vault)
+    _, heldout_suite = split_benchmark_suite(conn, vault)
+    conn.close()
+    assert any(p["id"] == "SWM-HELDOUT-1766-L7" for p in heldout_suite)
+
+    # 3. Verify record_swm_episodic_delivery creates/updates 04-episodic/YYYY-MM-DD-log.md idempotently
+    log_path = record_swm_episodic_delivery(
+        vault_dir=vault,
+        run_id="swm-op1766-a2",
+        wp_id=1766,
+        wp_subject="Harden Organon 6-Stage Pipeline",
+        repo_name="software-machine",
+        commit_sha="a1b2c3d4e5f6",
+        audit_score=99,
+        goldwood_g=9.64,
+        gitlab_mr_url="https://gitlab.metatopia.gr/iliachry/software-machine/-/merge_requests/42",
+        date_str="2026-11-10",
+    )
+    assert log_path.is_file()
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "`swm-op1766-a2`" in log_text
+    assert "`a1b2c3d4e5f6`" in log_text
+    assert "9.64" in log_text
+
+    # Second call with same run_id is idempotent
+    record_swm_episodic_delivery(
+        vault_dir=vault,
+        run_id="swm-op1766-a2",
+        wp_id=1766,
+        wp_subject="Harden Organon 6-Stage Pipeline",
+        repo_name="software-machine",
+        commit_sha="a1b2c3d4e5f6",
+        audit_score=99,
+        goldwood_g=9.64,
+        date_str="2026-11-10",
+    )
+    assert log_path.read_text(encoding="utf-8").count("## SWM Autonomous Delivery — `swm-op1766-a2`") == 1
