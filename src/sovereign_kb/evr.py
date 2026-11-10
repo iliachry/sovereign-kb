@@ -2547,12 +2547,28 @@ def verify_rust_evr_interop(evr_file: str | Path) -> dict[str, Any]:
         rs_path = tmp / "evr_kernel.rs"
         bin_path = tmp / "evr-rs"
         rs_path.write_text(RUST_EVR_KERNEL_SRC, encoding="utf-8")
+        comp_env = dict(os.environ)
         comp = subprocess.run(
             [rustc, "--edition", "2021", "-O", "-D", "warnings", str(rs_path), "-o", str(bin_path)],
             capture_output=True,
             text=True,
             check=False,
+            env=comp_env,
         )
+        if comp.returncode != 0 and "tapi error" in (comp.stderr or ""):
+            sdk_root_dir = Path("/Library/Developer/CommandLineTools/SDKs")
+            for cand_sdk in sorted(sdk_root_dir.glob("MacOSX26*.sdk"), reverse=True):
+                if cand_sdk.is_dir():
+                    comp_env["SDKROOT"] = str(cand_sdk)
+                    comp = subprocess.run(
+                        [rustc, "--edition", "2021", "-O", "-D", "warnings", str(rs_path), "-o", str(bin_path)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env=comp_env,
+                    )
+                    if comp.returncode == 0:
+                        break
         if comp.returncode != 0:
             return {"rust_available": True, "valid": False, "compile_error": comp.stderr}
         run = subprocess.run(

@@ -2717,7 +2717,7 @@ def test_gwi_kb_profile_spectral_and_adversarial(
 
 def test_pistis_blockchain_tokenomics_and_aristocracy(tmp_path: Path, capsys) -> None:
     """
-    Verify Pistis (Πίστις — `sovereign_kb.chain`):
+    F-17: Verify Pistis (Πίστις — `sovereign_kb.chain`):
       1. Poetics 7-State Negotiation Contract FSM (`NC`), `PLT` minting, S1-S4 invariants,
          249 ISO 3166-1 alpha-2 territory bitmap, and Dual Push/Pull-Escrow `RoyaltySplitter`.
       2. RFC 6962 Domain-Separated Merkle Tree + P3 Provenance Trace + Privilege-Gap Circuit Breaker.

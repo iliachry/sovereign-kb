@@ -3240,6 +3240,40 @@ def cmd_rsi(args) -> None:
             print(f"  Healed Orphan Notes   : {len(res['healed_orphans'])} file(s)")
         return
 
+    if action == "compile-prompts":
+        from sovereign_kb.frontier_organon import compile_organon_prompts
+
+        compiled = compile_organon_prompts(vault_dir)
+        if getattr(args, "json", False):
+            print(json.dumps(compiled, indent=2))
+        else:
+            print("=== Sovereign-KB Compile-Time Prompt & Exemplar Optimizer (`organon-mipro-v1`) ===")
+            print(f"  Held-Out Objective J_prompt : {compiled['objective_j_prompt']:.4f}")
+            print(f"  Artifact SHA-256            : {compiled['artifact_sha256']}")
+            print(f"  Golden Exemplars Selected   : {len(compiled['stages']['stage1_triage']['few_shot_exemplars'])}")
+            print(
+                f"  Anti-Regression Guardrails  : {len(compiled['stages']['stage3_implement']['anti_regression_guardrails'])}"
+            )
+        return
+
+    if action == "sleep-consolidate":
+        from sovereign_kb.frontier_organon import export_sleep_wake_lora_dataset
+
+        manifest = export_sleep_wake_lora_dataset(vault_dir)
+        if getattr(args, "json", False):
+            print(json.dumps(manifest, indent=2))
+        else:
+            print("=== Sovereign-KB Parametric Sleep-Wake Consolidation (`LoRA` / `GRPO` for `gx10`) ===")
+            print(f"  Base Model / Target Node    : {manifest['base_model']} on {manifest['target_node']}")
+            print(f"  SFT Trajectories Exported   : {manifest['sft_trajectory_count']} -> {manifest['sft_path']}")
+            print(
+                f"  GRPO Preference Pairs       : {manifest['grpo_preference_pair_count']} -> {manifest['grpo_path']}"
+            )
+            print(
+                f"  Mining Guardrail Enforced   : {manifest['mining_guardrail_enforced']} ({manifest['gx10_script_path']})"
+            )
+        return
+
     report = run_rsi_cycle(
         vault_dir=vault_dir,
         get_db_fn=get_db,
@@ -3862,7 +3896,15 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
             p_rsi.add_argument(
                 "rsi_cmd",
                 nargs="?",
-                choices=("cycle", "tune", "consolidate", "status", "ledger"),
+                choices=(
+                    "cycle",
+                    "tune",
+                    "consolidate",
+                    "status",
+                    "ledger",
+                    "compile-prompts",
+                    "sleep-consolidate",
+                ),
                 default="cycle",
                 help="RSI subcommand (default: cycle)",
             )
@@ -4000,6 +4042,55 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     register_chain_subparser(sub, show_all_aliases=show_all_aliases)
     register_video_subparser(sub, show_all_aliases=show_all_aliases)
     register_evr_subparser(sub, show_all_aliases=show_all_aliases)
+
+    p_cgraph = sub.add_parser(
+        "code-graph",
+        **(
+            {"help": "Build polyglot AST/SCIP symbol & call graph and slice 2-hop dependency subgraphs"}
+            if show_all_aliases
+            else {}
+        ),
+    )
+    p_cgraph.add_argument("target_dir", nargs="?", default=".", help="Target repository directory (default: .)")
+    p_cgraph.add_argument("-q", "--query", help="Optional symbol/feature query to slice a k-hop dependency subgraph")
+    p_cgraph.add_argument("--hops", type=int, default=2, help="Caller/callee expansion hops (default: 2)")
+    p_cgraph.add_argument("-n", "--limit", type=int, default=8, help="Max seed symbols for subgraph slice")
+    p_cgraph.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_falsify = sub.add_parser(
+        "falsify",
+        **(
+            {
+                "help": "Run AST mutation kill-ratio probe, property-fuzz check (`GWI-SCI-06`) & formal proof verifier (`GWI-SCI-07`)"
+            }
+            if show_all_aliases
+            else {}
+        ),
+    )
+    p_falsify.add_argument("target_dir", nargs="?", default=".", help="Target repository directory (default: .)")
+    p_falsify.add_argument("--target-file", help="Optional relative Python file path to mutate")
+    p_falsify.add_argument("--max-mutants", type=int, default=4, help="Maximum AST operator mutants to test")
+    p_falsify.add_argument("--run-mutations", action="store_true", help="Execute live pytest AST mutation probe")
+    p_falsify.add_argument(
+        "--execute-symbolic",
+        action="store_true",
+        help="Execute SymPy/Z3 symbolic verification scripts",
+    )
+    p_falsify.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_splat = sub.add_parser(
+        "splat",
+        **(
+            {
+                "help": "Audit 3D Gaussian Splatting (`.ply`, `.splat`, `.ksplat`, `.spz`) assets for WebXR/Quest 3 budgets"
+            }
+            if show_all_aliases
+            else {}
+        ),
+    )
+    p_splat.add_argument("target", nargs="?", default=".", help="Target directory or `.ply`/`.splat` file")
+    p_splat.add_argument("--json", action="store_true", help="Output JSON")
+
     return parser
 
 
@@ -4383,8 +4474,140 @@ def main(argv: list[str] | None = None) -> None:
         cmd_me(args)
     elif args.cmd == "resume":
         cmd_resume(args)
+    elif args.cmd == "code-graph":
+        cmd_code_graph(args)
+    elif args.cmd == "falsify":
+        cmd_falsify(args)
+    elif args.cmd == "splat":
+        cmd_splat(args)
     else:
         cmd_status(args)
+
+
+def cmd_code_graph(args) -> None:
+    from sovereign_kb.frontier_organon import CodeGraphIndexer, slice_symbol_subgraph
+
+    target_dir = Path(getattr(args, "target_dir", ".")).expanduser().resolve()
+    query = getattr(args, "query", None)
+    if query:
+        hops = max(0, int(getattr(args, "hops", 2)))
+        limit = max(1, int(getattr(args, "limit", 8)))
+        res = slice_symbol_subgraph(
+            target_dir,
+            query,
+            hops=hops,
+            top_k=limit,
+            persist=True,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"=== Sovereign-KB Polyglot AST Subgraph Slice (`{target_dir.name}`, hops={res['hops']}) ===")
+            print(f"  Query          : {res['query']}")
+            print(f"  Affected Files : {', '.join(res['affected_files'])}")
+            for s in res["seed_symbols"]:
+                print(
+                    f"  • [{s['language']}:{s['kind']}] {s['name']} ({s['file_path']}:{s['start_line']}) in_deg={s['in_degree']}"
+                )
+        return
+
+    indexer = CodeGraphIndexer(target_dir)
+    rep = indexer.build_graph(persist=True, export_hips=True)
+    rep_out = {k: v for k, v in rep.items() if k not in ("nodes", "edges")}
+    if getattr(args, "json", False):
+        print(json.dumps(rep_out, indent=2))
+    else:
+        print(f"=== Sovereign-KB Polyglot AST & Call-Graph Index (`{target_dir.name}`) ===")
+        print(
+            f"  Files Scanned : {rep_out['files_scanned']} | Symbols: {rep_out['total_symbols']} "
+            f"| Resolved Call Edges: {rep_out['resolved_call_edges']}"
+        )
+        print(f"  Languages     : {rep_out['languages']}")
+        print(f"  SQLite Graph  : {rep_out['db_path']}")
+        print(f"  HIPS Corpus   : {rep_out['hips_corpus_path']}")
+        for top in rep_out["top_central_symbols"][:5]:
+            print(
+                f"  • {top['name']:36s} ({top['file_path']}) in_degree={top['in_degree']} centrality={top['centrality']:.3f}"
+            )
+
+
+def cmd_falsify(args) -> None:
+    from sovereign_kb.frontier_organon import (
+        check_formal_proofs,
+        check_property_and_mutation_rigor,
+        run_ast_mutation_probe,
+    )
+
+    target_dir = Path(getattr(args, "target_dir", ".")).expanduser().resolve()
+    f6, p6, metrics = check_property_and_mutation_rigor(target_dir)
+    formal = check_formal_proofs(
+        target_dir,
+        execute_symbolic=bool(getattr(args, "execute_symbolic", False)),
+    )
+    mut_res = None
+    if getattr(args, "run_mutations", False) or getattr(args, "target_file", None):
+        mut_res = run_ast_mutation_probe(
+            target_dir,
+            target_rel_path=getattr(args, "target_file", None),
+            max_mutants=int(getattr(args, "max_mutants", 4)),
+        )
+    all_findings = f6 + formal.get("findings", [])
+    overall_passed = (
+        bool(formal.get("passed", False))
+        and not any(f.get("blocker") for f in all_findings)
+        and (mut_res is None or bool(mut_res.get("passed", False)))
+    )
+    payload = {
+        "target_dir": str(target_dir),
+        "passed": overall_passed,
+        "property_and_assertion_metrics": metrics,
+        "formal_proof_certificate": formal,
+        "ast_mutation_probe": mut_res,
+        "findings": all_findings,
+        "passes": p6 + formal.get("passes", []),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"=== Sovereign-KB Falsification & Formal Verification Gate (`{target_dir.name}`) ===")
+        print(
+            f"  Test Assertions : {metrics['total_assertions']} across {metrics['total_test_functions']} tests "
+            f"({metrics['assertions_per_test']} assertions/test, property_fuzz={metrics['has_property_fuzzing']})"
+        )
+        print(
+            f"  Formal Proofs   : cert_sha256={formal['certificate_sha256']} | passed={formal['passed']} "
+            f"(lean={len(formal['lean_theorems'])}, sympy/z3={len(formal['symbolic_scripts'])}, "
+            f"tex_theorems={formal['tex_theorem_count']})"
+        )
+        if mut_res:
+            print(
+                f"  AST Mutation    : {mut_res['mutants_killed']}/{mut_res['mutants_tested']} killed "
+                f"(M_kill={mut_res['mutation_kill_ratio']:.2%}) [{mut_res['status']}]"
+            )
+    if not overall_passed:
+        sys.exit(1)
+
+
+def cmd_splat(args) -> None:
+    from sovereign_kb.frontier_organon import audit_and_package_3dgs
+
+    target = Path(getattr(args, "target", ".")).expanduser().resolve()
+    rep = audit_and_package_3dgs(target)
+    if getattr(args, "json", False):
+        print(json.dumps(rep, indent=2))
+    else:
+        print(f"=== Sovereign-KB 3D Gaussian Splatting (`3DGS`) WebXR Auditor (`{target.name}`) ===")
+        print(
+            f"  Assets Scanned : {rep['asset_count']} | Total Gaussians: {rep['total_gaussians']:,} "
+            f"| Passed: {rep['passed']}"
+        )
+        for a in rep["assets"]:
+            print(
+                f"  • {Path(a['path']).name:28s} : {a['gaussian_count']:,} splats, "
+                f"SH_deg={a['sh_degree']}, {a['size_mb']:.2f} MB (Quest3_90fps={a['quest3_90fps_budget_ok']})"
+            )
+    if not rep.get("passed", False):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

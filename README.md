@@ -132,6 +132,9 @@ skb dashboard --export
 | Open the interactive `[[Wikilink]]` Knowledge Graph dashboard | `skb dashboard` |
 | Print your Tier-0 profile (`00-identity/README-me.md` + `01-now/now.md`) | `skb me` |
 | Print zero-context-tax Creative Mode Resumption Packet(s) (`all`, `math`, `compute`, `spatial`, `writing`) | `skb resume math` |
+| Build polyglot AST/SCIP symbol & call graph and slice $k$-hop dependency subgraphs | `skb code-graph . -q "compute_goldwood_index"` |
+| Run AST mutation kill-ratio probe, property-fuzz check (`GWI-SCI-06`) & formal proof verifier (`GWI-SCI-07`) | `skb falsify . --run-mutations` |
+| Audit 3D Gaussian Splatting (`.ply`, `.splat`, `.ksplat`, `.spz`) assets for WebXR/Quest 3 budgets | `skb splat .` |
 | Show vault & index status | `skb status` |
 | Run Autonomous Human-Like Video Playback Audit (native `.mp4` stream to Bedrock Nova Pro + Triad keyframes) | `skb video audit artifacts/walkthrough_compressed.mp4` |
 | Run the Unified Sovereign Organon CLI (`organon status`, `organon showcase`, `organon task`, `organon finish`, `organon sync-state`, `organon chain`, `organon evr`) | `organon status --all-nodes` |
@@ -151,7 +154,7 @@ Beyond everyday note capture and search, `sovereign-kb` ships four advanced engi
 3. **[7-Archetype Project & Scientific Paper Factory (`skb scaffold`)](docs/SCAFFOLDING.md)**
    - One-command repository bootstrapping (`web-ts-3d-gis`, `python-uv-ai`, `rust-systems`, `spatial-xr-ble`, `paper-ieee-arxiv`, `game-sim-3d`, `metatopia-chameleon`) pre-wired with `AGENTS.md` and `./scripts/quality_gate.sh`.
 4. **[Recursive Self-Improvement (`skb rsi`), Soar 9.6 Kernel (`skb soar`), Rust Certification & FinOps](docs/RSI.md)**
-   - Closed-loop retrieval policy tuning (`skb evolve`), Soar 9.6 symbolic chunking (`skb soar`), 20-domain `rustc` certification (`skb certify rust`), multi-agent token FinOps (`skb usage`), and live session auditing (`skb sessions`).
+   - Closed-loop retrieval policy tuning (`skb evolve`), compile-time prompt/exemplar optimization (`skb rsi compile-prompts`), parametric Sleep-Wake LoRA/GRPO dataset export (`skb rsi sleep-consolidate`), Soar 9.6 symbolic chunking (`skb soar`), 20-domain `rustc` certification (`skb certify rust`), multi-agent token FinOps (`skb usage`), and live session auditing (`skb sessions`).
 
 Also included in every full starter vault (`src/sovereign_kb/starter_vault/02-operating-system/`):
 - [The 6-Pillar Deterministic Autonomous Engineering Framework](src/sovereign_kb/starter_vault/02-operating-system/autonomous-engineering-framework.md)

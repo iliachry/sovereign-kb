@@ -1047,6 +1047,8 @@ def check_web_security(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
 
 def audit_science_integrity(target: Path, profile: str = "app", run_collect: bool = False) -> dict[str, Any]:
     """Run all `GWI-SCI-*` probes on a repository directory (or the parent directory of a file target)."""
+    from sovereign_kb.frontier_organon import check_formal_proofs, check_property_and_mutation_rigor
+
     resolved = target.expanduser().resolve()
     root = resolved if resolved.is_dir() else resolved.parent
     run_collect = run_collect or os.environ.get("GWI_SCI_COLLECT", "") == "1"
@@ -1062,11 +1064,22 @@ def audit_science_integrity(target: Path, profile: str = "app", run_collect: boo
         f, ps = fn()
         findings.extend(f)
         passes.extend(ps)
+
+    f6, p6, mut_metrics = check_property_and_mutation_rigor(root)
+    findings.extend(f6)
+    passes.extend(p6)
+
+    formal_cert = check_formal_proofs(root, execute_symbolic=False)
+    findings.extend(formal_cert.get("findings", []))
+    passes.extend(formal_cert.get("passes", []))
+
     return {
         "lens": SCI_LENS_ID,
         "target": str(root),
         "profile": profile,
         "collection_run": run_collect,
+        "mutation_and_property_metrics": mut_metrics,
+        "formal_proof_certificate": formal_cert,
         "findings": findings,
         "passes": passes,
         "blockers": [f for f in findings if f["blocker"]],
