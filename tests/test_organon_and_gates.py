@@ -307,3 +307,363 @@ def test_organon_status_and_showcase_cli(capsys) -> None:
     out = capsys.readouterr().out
     parsed = json.loads(out)
     assert len(parsed["workflows"]) == 6
+
+
+def test_organon_open_core_portability_without_swm_or_mekb(tmp_path: Path, monkeypatch, capsys) -> None:
+    """F-16: Verify Open-Core Organon works cleanly out-of-the-box without `swm`, `me-kb`, or `KB_REMOTE_PEER`."""
+    import subprocess
+
+    import pytest
+
+    from sovereign_kb.cli import main as skb_main
+
+    # 1. Initialize a clean standalone `skb` vault and configure Open-Core standalone env
+    user_vault = tmp_path / "open-core-notes"
+    skb_main(["init", str(user_vault), "--no-embed"])
+    capsys.readouterr()
+
+    monkeypatch.setenv("SWM_BIN", "")
+    monkeypatch.setenv("ORGANON_IGNORE_DEFAULT_ME_KB", "1")
+    monkeypatch.delenv("ME_KB_DIR", raising=False)
+    monkeypatch.setenv("KB_VAULT_DIR", str(user_vault))
+    monkeypatch.setenv("KB_REMOTE_PEER", "")
+
+    # 2. `organon status` reports Open-Core edition and binds to `user_vault`
+    st = collect_organon_status(all_nodes=False)
+    assert Path(st["episteme_kb"]["vault_dir"]).resolve() == user_vault.resolve()
+    assert st["techne_swm"]["installed"] is False
+    assert st["techne_swm"]["edition"] == "open-core"
+    assert st["techne_swm"]["version"] == "open-core"
+    assert st["techne_swm"]["git_sha"] == "not-installed"
+
+    main_cli(["status"])
+    human_status = capsys.readouterr().out
+    assert "Open-Core Edition" in human_status
+
+    # 3. `organon kb status` delegates in-process to `skb` against `user_vault` without requiring `~/.local/bin/kb`
+    main_cli(["kb", "status"])
+    kb_out = capsys.readouterr().out
+    assert str(user_vault) in kb_out
+
+    # 4. `organon swm --help` exits 0 with Open-Core overview; `organon swm queue --json` exits 2 cleanly (no FileNotFoundError)
+    main_cli(["swm", "--help"])
+    swm_help = capsys.readouterr().out
+    assert "Open-Core" in swm_help
+    assert "goldwood.tech/organon" in swm_help
+
+    with pytest.raises(SystemExit) as exc_swm:
+        main_cli(["swm", "queue", "--json"])
+    assert exc_swm.value.code == 2
+    swm_json = json.loads(capsys.readouterr().out)
+    assert swm_json["installed"] is False
+    assert swm_json["edition"] == "open-core"
+
+    # 5. `organon task <id>` assembles the Episteme Context Pack locally in preview mode (`exit 0`), and exits `2` on `--execute`
+    main_cli(["task", "42"])
+    task_out = capsys.readouterr().out
+    assert "Episteme Context Pack" in task_out
+    assert "Open-Core Mode" in task_out
+
+    with pytest.raises(SystemExit) as exc_exec:
+        main_cli(["task", "42", "--execute"])
+    assert exc_exec.value.code == 2
+    capsys.readouterr()
+
+    # 6. `organon finish <repo> --skip-push` succeeds in single-node Open-Core mode when `KB_REMOTE_PEER` is unset
+    import sys
+
+    sample_repo = tmp_path / "open-core-app"
+    sample_repo.mkdir()
+    (sample_repo / ".gitignore").write_text("evidence/\n.pytest_cache/\n__pycache__/\n", encoding="utf-8")
+    (sample_repo / "README.md").write_text(
+        "# Open-Core Sample Service\n\n"
+        "Deterministic reference service verifying single-node Open-Core `organon finish` execution, "
+        "run-bound GWI 9+ behavioral receipts, and RFC 6962 Merkle attestation without remote SSH peers.\n\n"
+        "## Quickstart\n\n```bash\n./scripts/quality_gate.sh\n```\n",
+        encoding="utf-8",
+    )
+    (sample_repo / "AGENTS.md").write_text(
+        "# AGENTS.md\n\n## Feature Registry\n"
+        "- `FEAT-01`: Deterministic addition (`src/app.py`)\n"
+        "- `FEAT-02`: Deterministic subtraction (`src/app.py`)\n"
+        "- `FEAT-03`: Deterministic multiplication (`src/app.py`)\n",
+        encoding="utf-8",
+    )
+    (sample_repo / "pyproject.toml").write_text(
+        '[project]\nname = "open-core-sample"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n',
+        encoding="utf-8",
+    )
+    (sample_repo / "src").mkdir()
+    (sample_repo / "src" / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n\n"
+        "def sub(a: int, b: int) -> int:\n    return a - b\n\n"
+        "def mul(a: int, b: int) -> int:\n    return a * b\n",
+        encoding="utf-8",
+    )
+    (sample_repo / "tests").mkdir()
+    (sample_repo / "tests" / "test_app.py").write_text(
+        'def test_feat_01() -> None:\n    """FEAT-01"""\n    assert 1 + 1 == 2\n\n'
+        'def test_feat_02() -> None:\n    """FEAT-02"""\n    assert 3 - 1 == 2\n\n'
+        'def test_feat_03() -> None:\n    """FEAT-03"""\n    assert 2 * 3 == 6\n',
+        encoding="utf-8",
+    )
+    (sample_repo / "scripts").mkdir()
+    gate = sample_repo / "scripts" / "quality_gate.sh"
+    gate.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n{sys.executable} -m pytest -q\n", encoding="utf-8")
+    gate.chmod(0o755)
+    subprocess.run(["git", "-C", str(sample_repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "commit", "-q", "-m", "init"], check=True)
+
+    monkeypatch.setenv("SWM_HOME", str(tmp_path / "swm-home"))
+    monkeypatch.setattr("sovereign_kb.organon._get_cluster_env", lambda _k: "")
+    main_cli(["finish", str(sample_repo), "--skip-push"])
+    fin_out = capsys.readouterr().out
+    assert "Single-node mode" in fin_out
+    assert "Anchored " in fin_out
+
+
+def test_organon_vault_fail_closed_cwd_walkup_and_starter_vault_immutability(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Verify starter_vault immutability, fail-closed invalid vault configs, cwd walk-up parity, and SWM version gating."""
+    import shutil
+    import subprocess
+    import sys
+
+    import pytest
+
+    from sovereign_kb.audit_registry import resolve_organon_vault_state, resolve_swm_bin
+    from sovereign_kb.cli import main as skb_main
+    from sovereign_kb.organon import _resolve_openproject_bin
+
+    starter_dir = (Path(audit_registry.__file__).resolve().parent / "starter_vault").resolve()
+    assert not (starter_dir / ".kb").exists()
+
+    # 1. Clean unconfigured HOME + non-vault workdir containing README.md
+    clean_home = tmp_path / "clean-home"
+    work_dir = clean_home / "some-app"
+    work_dir.mkdir(parents=True)
+    (work_dir / "README.md").write_text("# App Repo\n", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", str(clean_home))
+    monkeypatch.setenv("SWM_HOME", str(clean_home / ".swm"))
+    monkeypatch.delenv("ME_KB_DIR", raising=False)
+    monkeypatch.delenv("KB_VAULT_DIR", raising=False)
+    monkeypatch.delenv("OPENPROJECT_QUERY_BIN", raising=False)
+    monkeypatch.setenv("KB_REMOTE_PEER", "")
+    monkeypatch.setattr("sovereign_kb.organon._get_cluster_env", lambda _k: "")
+    monkeypatch.chdir(work_dir)
+
+    # Even if ~/Projects/software-machine source checkout exists on disk, missing `swm` binary => Open-Core version
+    fake_swm_src = clean_home / "Projects" / "software-machine" / "src" / "software_machine"
+    fake_swm_src.mkdir(parents=True)
+    (fake_swm_src / "__init__.py").write_text('__version__ = "0.9.9"\n', encoding="utf-8")
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda cmd: None if cmd == "swm" else real_which(cmd))
+    monkeypatch.delenv("SWM_BIN", raising=False)
+
+    v_path, v_source = resolve_organon_vault_state()
+    assert v_source == "unconfigured"
+    assert v_path != starter_dir
+
+    st = collect_organon_status(all_nodes=False)
+    assert st["episteme_kb"]["configured"] is False
+    assert st["episteme_kb"]["vault_source"] == "unconfigured"
+    assert st["techne_swm"]["installed"] is False
+    assert st["techne_swm"]["edition"] == "open-core"
+    assert st["techne_swm"]["version"] == "open-core"
+    assert st["techne_swm"]["git_sha"] == "not-installed"
+    assert _resolve_openproject_bin() is None
+
+    # Invalid explicit SWM_BIN warns once per unique path on stderr and returns None
+    monkeypatch.setenv("SWM_BIN", str(clean_home / "nonexistent-swm"))
+    assert resolve_swm_bin() is None
+    assert "Warning: SWM_BIN=" in capsys.readouterr().err
+    assert resolve_swm_bin() is None
+    assert capsys.readouterr().err == ""
+    monkeypatch.setenv("SWM_BIN", "")
+
+    # Unconfigured verify & task succeed gracefully without mutating starter_vault or work_dir
+    main_cli(["verify"])
+    ver_out = capsys.readouterr().out
+    assert "[skip]" in ver_out
+
+    main_cli(["task", "42"])
+    t_out = capsys.readouterr().out
+    assert "contract=v1.4.0, hits=0" in t_out
+
+    # Unconfigured `organon kb capture` fails closed without polluting starter_vault or work_dir
+    with pytest.raises(SystemExit) as exc_unconf_kb:
+        main_cli(["kb", "capture", "should not write anywhere"])
+    assert exc_unconf_kb.value.code == 1
+    capsys.readouterr()
+    assert not (starter_dir / ".kb").exists()
+    assert not (work_dir / ".kb").exists()
+
+    # 2. Explicitly configured invalid vault (`KB_VAULT_DIR` and `config.json`) MUST fail closed
+    sample_repo = tmp_path / "fail-closed-app"
+    sample_repo.mkdir()
+    (sample_repo / ".gitignore").write_text("evidence/\n.pytest_cache/\n__pycache__/\n", encoding="utf-8")
+    (sample_repo / "README.md").write_text(
+        "# Fail Closed Sample\n\n"
+        "Deterministic reference service verifying fail-closed Organon vault checks across `verify` and `finish` "
+        "when an explicit vault path does not exist or is uninitialized.\n\n"
+        "## Gate\n\n```bash\n./scripts/quality_gate.sh\n```\n",
+        encoding="utf-8",
+    )
+    (sample_repo / "AGENTS.md").write_text(
+        "# AGENTS.md\n\n## Feature Registry\n- `FEAT-01`: Health check (`src/app.py`)\n",
+        encoding="utf-8",
+    )
+    (sample_repo / "pyproject.toml").write_text(
+        '[project]\nname = "fc-app"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n',
+        encoding="utf-8",
+    )
+    (sample_repo / "src").mkdir()
+    (sample_repo / "src" / "app.py").write_text("def ok() -> bool:\n    return True\n", encoding="utf-8")
+    (sample_repo / "tests").mkdir()
+    (sample_repo / "tests" / "test_app.py").write_text(
+        'def test_feat_01() -> None:\n    """FEAT-01"""\n    assert True\n',
+        encoding="utf-8",
+    )
+    (sample_repo / "scripts").mkdir()
+    gate = sample_repo / "scripts" / "quality_gate.sh"
+    gate.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n{sys.executable} -m pytest -q\n", encoding="utf-8")
+    gate.chmod(0o755)
+    subprocess.run(["git", "-C", str(sample_repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(sample_repo), "commit", "-q", "-m", "init"], check=True)
+
+    monkeypatch.setenv("KB_VAULT_DIR", str(tmp_path / "does-not-exist-env"))
+    with pytest.raises(SystemExit) as exc_ver_env:
+        main_cli(["verify"])
+    assert exc_ver_env.value.code == 1
+    with pytest.raises(SystemExit) as exc_task_env:
+        main_cli(["task", "42"])
+    assert exc_task_env.value.code == 1
+    with pytest.raises(SystemExit) as exc_fin_env:
+        main_cli(["finish", str(sample_repo), "--skip-push"])
+    assert exc_fin_env.value.code == 1
+    capsys.readouterr()
+
+    monkeypatch.delenv("KB_VAULT_DIR", raising=False)
+    cfg_file = clean_home / ".config" / "sovereign-kb" / "config.json"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text(json.dumps({"vault_dir": str(tmp_path / "does-not-exist-cfg")}), encoding="utf-8")
+    with pytest.raises(SystemExit) as exc_ver_cfg:
+        main_cli(["verify"])
+    assert exc_ver_cfg.value.code == 1
+    with pytest.raises(SystemExit) as exc_fin_cfg:
+        main_cli(["finish", str(sample_repo), "--skip-push"])
+    assert exc_fin_cfg.value.code == 1
+    capsys.readouterr()
+
+    # 3. Multi-vault cwd walk-up parity: config.json -> vault_a, chdir(vault_b) -> both `skb` and `organon` pick vault_b
+    vault_a = tmp_path / "vault-a"
+    vault_b = tmp_path / "vault-b"
+    skb_main(["init", str(vault_a), "--no-embed"])
+    skb_main(["init", str(vault_b), "--no-embed"])
+    cfg_file.write_text(json.dumps({"vault_dir": str(vault_a)}), encoding="utf-8")
+    capsys.readouterr()
+
+    monkeypatch.chdir(vault_b)
+    resolved_v, resolved_src = resolve_organon_vault_state()
+    assert resolved_src == "cwd"
+    assert resolved_v == vault_b.resolve()
+
+    main_cli(["kb", "capture", "Decision recorded inside vault B via cwd walkup."])
+    capsys.readouterr()
+    b_logs = list((vault_b / "04-episodic").glob("*-log.md"))
+    a_logs = list((vault_a / "04-episodic").glob("*-log.md"))
+    assert any("Decision recorded inside vault B" in p.read_text(encoding="utf-8") for p in b_logs)
+    assert not any("Decision recorded inside vault B" in p.read_text(encoding="utf-8") for p in a_logs)
+    assert not (starter_dir / ".kb").exists()
+
+    # 4. Explicit configuration, symlink alias, case-variant alias, or `skb init` targeting `starter_vault` is rejected
+    from sovereign_kb.audit_registry import is_bundled_starter_vault_path
+    from sovereign_kb.retrieval import retrieve_from_vault
+
+    starter_entries_before = sorted(p.relative_to(starter_dir) for p in starter_dir.rglob("*"))
+    starter_symlink = tmp_path / "starter-alias"
+    starter_symlink.symlink_to(starter_dir)
+    monkeypatch.chdir(work_dir)
+
+    alias_targets: list[Path] = [starter_dir, starter_symlink, starter_symlink / "02-operating-system"]
+    upper_starter = starter_dir.with_name("STARTER_VAULT")
+    if upper_starter.exists():
+        upper_symlink = tmp_path / "starter-upper-alias"
+        upper_symlink.symlink_to(upper_starter)
+        alias_targets.extend([upper_starter, upper_symlink, upper_symlink / "nested-new-dir"])
+
+    for alias_p in alias_targets:
+        assert is_bundled_starter_vault_path(alias_p) is True
+
+    for env_k in ("ME_KB_DIR", "KB_VAULT_DIR"):
+        for alias_p in alias_targets:
+            monkeypatch.delenv("ME_KB_DIR", raising=False)
+            monkeypatch.delenv("KB_VAULT_DIR", raising=False)
+            monkeypatch.setenv(env_k, str(alias_p))
+            _, f_src = resolve_organon_vault_state()
+            assert f_src == "forbidden_starter"
+            assert collect_organon_status(all_nodes=False)["episteme_kb"]["configured"] is False
+            for bad_args in (["verify"], ["task", "42"], ["finish", str(sample_repo), "--skip-push"], ["kb", "status"]):
+                with pytest.raises(SystemExit) as exc_st:
+                    main_cli(bad_args)
+                assert exc_st.value.code == 1
+            capsys.readouterr()
+
+    monkeypatch.delenv("ME_KB_DIR", raising=False)
+    monkeypatch.delenv("KB_VAULT_DIR", raising=False)
+    for alias_p in alias_targets:
+        cfg_file.write_text(json.dumps({"vault_dir": str(alias_p)}), encoding="utf-8")
+        _, cfg_src = resolve_organon_vault_state()
+        assert cfg_src == "forbidden_starter"
+        for bad_args in (["verify"], ["task", "42"], ["finish", str(sample_repo), "--skip-push"], ["kb", "status"]):
+            with pytest.raises(SystemExit) as exc_cfg_st:
+                main_cli(bad_args)
+            assert exc_cfg_st.value.code == 1
+        with pytest.raises(SystemExit) as exc_skb_direct:
+            skb_main(["--vault", str(alias_p), "status"])
+        assert exc_skb_direct.value.code == 1
+        with pytest.raises(SystemExit) as exc_skb_init:
+            skb_main(["init", str(alias_p), "--no-embed"])
+        assert exc_skb_init.value.code == 1
+        with pytest.raises(SystemExit) as exc_org_init:
+            main_cli(["kb", "init", str(alias_p), "--no-embed"])
+        assert exc_org_init.value.code == 1
+        ret_pack = retrieve_from_vault(alias_p, "guard check")
+        assert ret_pack["declarative_chunks"] == []
+        capsys.readouterr()
+
+    # Verify resolve_active_vault_dir(), default_triad_ledger_path(), append_triad_provenance_event(), record_gwi_outcome_feedback(), and canary never touch starter_vault
+    from sovereign_kb.audit_registry import resolve_active_vault_dir
+    from sovereign_kb.bridge import (
+        append_triad_provenance_event,
+        default_triad_ledger_path,
+        run_triad_end_to_end_canary,
+    )
+
+    cfg_file.unlink(missing_ok=True)
+    home_default_link = clean_home / "sovereign-kb-vault"
+    home_default_link.symlink_to(starter_dir)
+    assert resolve_organon_vault_state()[1] == "forbidden_starter"
+    assert not is_bundled_starter_vault_path(resolve_active_vault_dir())
+    assert not is_bundled_starter_vault_path(default_triad_ledger_path(starter_dir))
+    append_triad_provenance_event("gwi.evaluated", {"probe": 1}, ledger_file=starter_dir / "explicit.jsonl")
+    monkeypatch.setenv("SWM_HOME", str(starter_dir))
+    assert not is_bundled_starter_vault_path(default_triad_ledger_path(starter_dir))
+    append_triad_provenance_event("gwi.evaluated", {"probe": 2}, ledger_file=starter_dir / "explicit.jsonl")
+    record_gwi_outcome_feedback(work_dir, {"blockers": [{"id": "GWI-APP-L07"}]}, vault_dir=starter_dir)
+    monkeypatch.setenv("SWM_HOME", str(clean_home / ".swm"))
+    assert run_triad_end_to_end_canary()["canary_passed"] is True
+    assert run_triad_end_to_end_canary(starter_dir)["canary_passed"] is True
+
+    starter_entries_after = sorted(p.relative_to(starter_dir) for p in starter_dir.rglob("*"))
+    assert starter_entries_after == starter_entries_before
+    assert not (starter_dir / ".kb").exists()
+    assert not (starter_dir / ".git").exists()

@@ -33,7 +33,10 @@ from .audit_registry import (
     AUDIT_REGISTRY_PATH,
     evaluate_subproject_freshness,
     get_sovereign_versions,
+    is_bundled_starter_vault_path,
     load_audit_registry,
+    resolve_organon_vault_state,
+    resolve_swm_bin,
 )
 from .bridge import (
     BRIDGE_CONTRACT_VERSION,
@@ -51,12 +54,107 @@ from .evr import cmd_evr, register_evr_subparser
 from .gwi import GWI_STANDARD_VERSION
 from .sessions import _get_cluster_env
 
+_VAULT_FREE_SKB_CMDS = {
+    "-h",
+    "--help",
+    "--help-all",
+    "--version",
+    "-V",
+    "init",
+    "scaffold",
+    "new",
+    "skills",
+    "sessions",
+    "chats",
+    "ps",
+    "usage",
+    "finops",
+    "gwi",
+    "goldwood",
+    "audit",
+    "video",
+    "chain",
+    "pistis",
+    "blockchain",
+    "evr",
+    "everything",
+}
 
-def _default_me_kb_dir() -> Path:
-    env_dir = os.environ.get("ME_KB_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser().resolve()
-    return (Path.home() / "GitLab" / "me-kb").resolve()
+
+def _is_initialized_vault(vault_path: Path) -> bool:
+    if is_bundled_starter_vault_path(vault_path):
+        return False
+    return vault_path.is_dir() and ((vault_path / ".kb").is_dir() or (vault_path / "INDEX.md").is_file())
+
+
+def _vault_error_message(prefix: str, vault_path: Path, vault_source: str) -> str:
+    if vault_source == "forbidden_starter" or is_bundled_starter_vault_path(vault_path):
+        return (
+            f"[{prefix}] Error: Bundled 'starter_vault' ({vault_path}) is a read-only package template and "
+            "cannot be used as a live vault. Run 'skb init ~/notes --save-default' instead."
+        )
+    return (
+        f"[{prefix}] Error: Configured vault '{vault_path}' ({vault_source}) does not exist or is not initialized. "
+        f"Run 'skb init {vault_path}' first."
+    )
+
+
+def _resolve_openproject_bin() -> Path | None:
+    """Locate optional `openproject-query` helper, remaining hermetic under pytest unless explicitly overridden."""
+    if "OPENPROJECT_QUERY_BIN" in os.environ:
+        raw = os.environ["OPENPROJECT_QUERY_BIN"].strip()
+        if not raw:
+            return None
+        cand = Path(raw).expanduser()
+        return cand.resolve() if cand.is_file() and os.access(cand, os.X_OK) else None
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    which_op = shutil.which("openproject-query")
+    if which_op:
+        return Path(which_op).resolve()
+    local_op = Path.home() / ".local" / "bin" / "openproject-query"
+    if local_op.is_file() and os.access(local_op, os.X_OK):
+        return local_op.resolve()
+    return None
+
+
+def _print_swm_open_core_notice(subargs: list[str] | None = None, as_json: bool = False) -> int:
+    """Emit a clean Open-Core diagnostic when `swm` (`software-machine`) is not installed."""
+    args_in = list(subargs or [])
+    if "-h" in args_in or "--help" in args_in:
+        print(
+            "usage: organon swm [subcommand]\n\n"
+            "Techne (`swm` — Autonomous 6-Stage Software Machine) is Goldwood Technologies'\n"
+            "proprietary studio orchestrator and is not installed in this Open-Core environment.\n\n"
+            "Open-source Organon pillars available locally right now:\n"
+            "  • Episteme  (`organon kb ...` / `skb`)       — 4-Way Hybrid Markdown Memory, Soar 9.6 & RSI\n"
+            "  • Phronesis (`organon audit .` / `gwi`)      — Goldwood Index (G >= 9.0) & Laws L0-L9 Gate\n"
+            "  • Pistis    (`organon chain ...`)            — RFC 6962 Merkle Proofs, NC FSM & Tokenomics\n"
+            "  • Polyglot  (`organon evr ...` / `evr`)      — Zero-Copy `.evr` Verified Artifact Capsules\n\n"
+            "Learn more: https://goldwood.tech/organon"
+        )
+        return 0
+
+    payload = {
+        "installed": False,
+        "edition": "open-core",
+        "pillar": "techne_swm",
+        "message": (
+            "Techne (`swm` — Goldwood Studio Engine) is not installed in this Open-Core environment. "
+            "Use `organon kb`, `organon audit`, `organon chain`, or `organon evr` locally."
+        ),
+        "url": "https://goldwood.tech/organon",
+    }
+    if as_json or "--json" in args_in:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(
+            "[organon] Techne (`swm` — Goldwood Studio Engine) is not installed in this Open-Core environment.\n"
+            "          Open-source pillars active locally: `organon kb`, `organon audit`, `organon chain`, `organon evr`.\n"
+            "          Architecture & live explorer: https://goldwood.tech/organon",
+            file=sys.stderr,
+        )
+    return 2
 
 
 def _resolve_local_node_name() -> str:
@@ -182,12 +280,15 @@ def merge_audit_registries(local_reg: dict[str, Any], remote_reg: dict[str, Any]
 def collect_organon_status(all_nodes: bool = False) -> dict[str, Any]:
     """Collect unified telemetry across Episteme (`kb`), Techne (`swm`), and Phronesis (`gwi`)."""
     versions = get_sovereign_versions()
-    me_kb = _default_me_kb_dir()
+    me_kb, vault_source = resolve_organon_vault_state()
+    vault_configured = vault_source not in ("unconfigured", "forbidden_starter") and _is_initialized_vault(me_kb)
     kb_db = me_kb / ".kb" / "index.db"
 
     # 1. Episteme (`kb`)
     episteme: dict[str, Any] = {
         "vault_dir": str(me_kb),
+        "configured": vault_configured,
+        "vault_source": vault_source,
         "version": versions.get("kb_version", __version__),
         "git_sha": versions.get("me_kb_sha", "unknown"),
         "engine_sha": versions.get("kb_sha", "unknown"),
@@ -196,13 +297,15 @@ def collect_organon_status(all_nodes: bool = False) -> dict[str, Any]:
         "chunks": 0,
         "vectors": 0,
         "links": 0,
-        "hips_ready": (me_kb / ".kb" / "hips-index").is_dir() and any((me_kb / ".kb" / "hips-index").iterdir()),
+        "hips_ready": vault_configured
+        and (me_kb / ".kb" / "hips-index").is_dir()
+        and any((me_kb / ".kb" / "hips-index").iterdir()),
         "soar_chunks": 0,
         "provenance_events": 0,
         "provenance_chain_valid": True,
         "outcome_probes": 0,
     }
-    if kb_db.is_file():
+    if vault_configured and kb_db.is_file():
         try:
             conn = sqlite3.connect(kb_db)
             episteme["documents"] = int(conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
@@ -250,13 +353,17 @@ def collect_organon_status(all_nodes: bool = False) -> dict[str, Any]:
     episteme["provenance_chain_valid"] = bool(chain_ok)
     episteme["provenance_events"] = int(chain_events)
 
-    # 2. Techne (`swm`) — reads ~/.swm/daemon.json and ~/.swm/runs/*.json
+    # 2. Techne (`swm`) — reads ~/.swm/daemon.json and ~/.swm/runs/*.json when installed
+    swm_bin = resolve_swm_bin()
+    swm_installed = swm_bin is not None
     swm_dir = Path.home() / ".swm"
     daemon_path = swm_dir / "daemon.json"
     runs_dir = swm_dir / "runs"
     techne: dict[str, Any] = {
-        "version": versions.get("swm_version", "unknown"),
-        "git_sha": versions.get("swm_sha", "unknown"),
+        "installed": swm_installed,
+        "edition": "studio" if swm_installed else "open-core",
+        "version": versions.get("swm_version", "open-core" if not swm_installed else "unknown"),
+        "git_sha": versions.get("swm_sha", "not-installed" if not swm_installed else "unknown"),
         "state_path": str(swm_dir),
         "total_runs": 0,
         "completed_runs": 0,
@@ -469,12 +576,17 @@ def print_organon_status(status: dict[str, Any]) -> None:
         f"      Provenance : {kb['provenance_events']} ledger events (SHA-256 chain={chain_str}, contract=v{kb['bridge_contract_version']})"
     )
     print()
-    print(f"  [2] TECHNE (`swm` v{swm['version']} @ {swm['git_sha']})")
-    print(f"      Control    : Mode={mode_badge} | Last Poll={poll_str}")
-    print(
-        f"      Factory    : {swm['total_runs']} total runs ({swm['completed_runs']} completed, "
-        f"{swm['in_progress_runs']} active, {swm['failed_runs']} failed)"
-    )
+    if swm.get("installed", True):
+        print(f"  [2] TECHNE (`swm` v{swm['version']} @ {swm['git_sha']})")
+        print(f"      Control    : Mode={mode_badge} | Last Poll={poll_str}")
+        print(
+            f"      Factory    : {swm['total_runs']} total runs ({swm['completed_runs']} completed, "
+            f"{swm['in_progress_runs']} active, {swm['failed_runs']} failed)"
+        )
+    else:
+        print("  [2] TECHNE (`swm` — Open-Core Edition: Goldwood Studio Engine Not Installed)")
+        print("      Control    : Standalone Open-Core Mode (`kb` + `gwi` + `chain` + `evr` active locally)")
+        print("      Explorer   : https://goldwood.tech/organon")
     print()
     print(f"  [3] PHRONESIS (`gwi` v{gwi['standard_version']})")
     print(
@@ -778,11 +890,56 @@ def main_cli(argv: list[str] | None = None) -> None:
 
     # Direct pillar pass-throughs
     if cmd in ("kb", "skb", "episteme", "memory"):
+        active_vault, vault_source = resolve_organon_vault_state()
+        has_explicit_vault_flag = any(arg == "--vault" or arg.startswith("--vault=") for arg in rest)
+        has_help_flag = any(arg in ("-h", "--help", "--help-all") for arg in rest)
+        default_mekb = (Path.home() / "GitLab" / "me-kb").resolve()
         kb_bin = shutil.which("kb") or str(Path.home() / ".local" / "bin" / "kb")
-        os.execv(kb_bin, [kb_bin, *rest])
+        if (
+            argv is None
+            and not has_explicit_vault_flag
+            and vault_source in ("config", "studio_default")
+            and active_vault == default_mekb
+            and default_mekb.is_dir()
+            and Path(kb_bin).is_file()
+            and os.access(kb_bin, os.X_OK)
+        ):
+            os.execv(kb_bin, [kb_bin, *rest])
+        from .cli import main as skb_main
+
+        forwarded = list(rest)
+        needs_vault = (
+            not has_explicit_vault_flag
+            and not has_help_flag
+            and (not forwarded or forwarded[0] not in _VAULT_FREE_SKB_CMDS)
+        )
+        if needs_vault:
+            if vault_source == "forbidden_starter":
+                print(_vault_error_message("organon", active_vault, vault_source), file=sys.stderr)
+                sys.exit(1)
+            if vault_source == "unconfigured":
+                print(
+                    "[organon] Error: No initialized Sovereign-KB vault found. "
+                    "Run 'skb init ~/notes --save-default' or pass '--vault <dir>'.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            forwarded = ["--vault", str(active_vault), *forwarded]
+        skb_main(forwarded)
+        return
     if cmd in ("swm", "techne", "machine"):
-        swm_bin = shutil.which("swm") or str(Path.home() / ".local" / "bin" / "swm")
-        os.execv(swm_bin, [swm_bin, *rest])
+        swm_bin = resolve_swm_bin()
+        if swm_bin is None:
+            rc = _print_swm_open_core_notice(rest)
+            if rc != 0:
+                sys.exit(rc)
+            return
+        if argv is None:
+            os.execv(str(swm_bin), [str(swm_bin), *rest])
+        rc_swm = subprocess.run([str(swm_bin), *rest], check=False).returncode
+        if rc_swm != 0:
+            sys.exit(rc_swm)
+        return
     if cmd in ("gwi", "phronesis", "measure"):
         from .gwi import main_cli as gwi_main
 
@@ -865,15 +1022,23 @@ def main_cli(argv: list[str] | None = None) -> None:
         return
 
     if parsed.subcmd == "verify":
-        skb_bin = shutil.which("skb") or str(Path.home() / ".local" / "bin" / "skb")
-        me_kb = _default_me_kb_dir()
-        v_cmd = [skb_bin, "--vault", str(me_kb), "verify"]
-        if parsed.heal:
-            v_cmd.append("--heal")
-        rc1 = subprocess.run(v_cmd, check=False).returncode
-        rc2 = subprocess.run([skb_bin, "gwi", "status"], check=False).returncode
-        swm_bin = shutil.which("swm") or str(Path.home() / ".local" / "bin" / "swm")
-        rc3 = subprocess.run([swm_bin, "status"], check=False).returncode if Path(swm_bin).is_file() else 0
+        me_kb, vault_source = resolve_organon_vault_state()
+        rc1 = 0
+        if vault_source == "unconfigured":
+            print(
+                "  [skip] No initialized Sovereign-KB vault configured (run `skb init ~/notes --save-default` to enable)."
+            )
+        elif not _is_initialized_vault(me_kb):
+            print(_vault_error_message("organon verify", me_kb, vault_source), file=sys.stderr)
+            sys.exit(1)
+        else:
+            v_cmd = [sys.executable, "-m", "sovereign_kb.cli", "--vault", str(me_kb), "verify"]
+            if parsed.heal:
+                v_cmd.append("--heal")
+            rc1 = subprocess.run(v_cmd, check=False).returncode
+        rc2 = subprocess.run([sys.executable, "-m", "sovereign_kb.cli", "gwi", "status"], check=False).returncode
+        swm_bin = resolve_swm_bin()
+        rc3 = subprocess.run([str(swm_bin), "status"], check=False).returncode if swm_bin is not None else 0
         if rc1 != 0 or rc2 != 0 or rc3 != 0:
             sys.exit(1)
         return
@@ -903,10 +1068,13 @@ def main_cli(argv: list[str] | None = None) -> None:
         return
 
     if parsed.subcmd == "task":
-        me_kb = _default_me_kb_dir()
-        op_bin = Path.home() / ".local" / "bin" / "openproject-query"
+        me_kb, vault_source = resolve_organon_vault_state()
+        if vault_source != "unconfigured" and not _is_initialized_vault(me_kb):
+            print(_vault_error_message("organon task", me_kb, vault_source), file=sys.stderr)
+            sys.exit(1)
+        op_bin = _resolve_openproject_bin()
         subject = f"OP#{parsed.wp_id}"
-        if op_bin.is_file():
+        if op_bin is not None:
             op_res = subprocess.run([str(op_bin), str(parsed.wp_id)], capture_output=True, text=True, check=False)
             if op_res.returncode == 0 and op_res.stdout.strip():
                 first_line = op_res.stdout.strip().splitlines()[0]
@@ -914,16 +1082,38 @@ def main_cli(argv: list[str] | None = None) -> None:
                 print(f"=== OpenProject Ground Truth (`openproject-query {parsed.wp_id}`) ===")
                 for ln in op_res.stdout.strip().splitlines()[:6]:
                     print(f"  {ln}")
-        pack = retrieve_vault_precedents(me_kb, query=subject, top_k=5)
+        if vault_source == "unconfigured":
+            pack: dict[str, Any] = {
+                "contract_version": BRIDGE_CONTRACT_VERSION,
+                "declarative_chunks": [],
+                "declarative_hits": [],
+                "procedural_chunks": [],
+            }
+        else:
+            pack = retrieve_vault_precedents(me_kb, query=subject, top_k=5)
+        decl_hits = pack.get("declarative_chunks") or pack.get("declarative_hits") or []
         print(
-            f"\n=== Episteme Context Pack (contract=v{pack.get('contract_version')}, "
-            f"hits={len(pack.get('declarative_hits') or [])}, soar_chunks={len(pack.get('procedural_chunks') or [])}) ==="
+            f"\n=== Episteme Context Pack (contract=v{pack.get('contract_version', BRIDGE_CONTRACT_VERSION)}, "
+            f"hits={len(decl_hits)}, soar_chunks={len(pack.get('procedural_chunks') or [])}) ==="
         )
-        for idx, ch in enumerate((pack.get("declarative_hits") or [])[:3], 1):
+        if vault_source == "unconfigured":
+            print(
+                "  [note] No initialized vault configured; run `skb init ~/notes --save-default` to index precedents."
+            )
+        for idx, ch in enumerate(decl_hits[:3], 1):
             print(f"  {idx}. [{ch.get('rel_path')}] {ch.get('heading', '')}")
-        swm_bin = shutil.which("swm") or str(Path.home() / ".local" / "bin" / "swm")
+        swm_bin = resolve_swm_bin()
+        if swm_bin is None:
+            print("\n=== Techne Dispatch (`swm` — Open-Core Mode) ===")
+            if parsed.execute:
+                sys.exit(_print_swm_open_core_notice(["run", str(parsed.wp_id)]))
+            print(
+                "  Context pack assembled locally. Live 6-stage autonomous `swm` execution requires "
+                "the Goldwood Studio Engine (`https://goldwood.tech/organon`)."
+            )
+            return
         # `swm run <wp_id>` executes live by default; pass `--dry-run` unless `--execute` is requested
-        swm_cmd = [swm_bin, "run", str(parsed.wp_id)]
+        swm_cmd = [str(swm_bin), "run", str(parsed.wp_id)]
         if not parsed.execute:
             swm_cmd.append("--dry-run")
         print(f"\n=== Dispatching Techne (`{' '.join(swm_cmd)}`) ===")
@@ -938,6 +1128,16 @@ def main_cli(argv: list[str] | None = None) -> None:
         return
 
     if parsed.subcmd == "finish":
+        active_vault, vault_source = resolve_organon_vault_state()
+        if vault_source != "unconfigured" and not _is_initialized_vault(active_vault):
+            print(_vault_error_message("organon finish", active_vault, vault_source), file=sys.stderr)
+            sys.exit(1)
+        if parsed.message and not parsed.skip_push and vault_source == "unconfigured":
+            print(
+                "[organon finish] Error: Cannot push vault commit (-m) because no initialized vault is configured.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         target_dir = Path(parsed.target).expanduser().resolve()
         readme_chk = Path(__file__).resolve().parent / "readme_check.py"
         if readme_chk.is_file() and (target_dir / "README.md").is_file():
@@ -951,11 +1151,20 @@ def main_cli(argv: list[str] | None = None) -> None:
 
         gwi_main(["audit", str(target_dir), "--strict", "--strict-lenses", "--execute-gate", "--write-evidence"])
 
-        print("\n=== [3/5] Running 6-Gate Sovereign KB Doctor (`kb verify`) ===")
-        skb_bin = shutil.which("skb") or str(Path.home() / ".local" / "bin" / "skb")
-        rc_kb = subprocess.run([skb_bin, "--vault", str(_default_me_kb_dir()), "verify"], check=False).returncode
-        if rc_kb != 0:
-            sys.exit(rc_kb)
+        print("\n=== [3/5] Running 6-Gate Sovereign KB Doctor (`skb verify`) ===")
+        active_vault, vault_source = resolve_organon_vault_state()
+        if vault_source == "unconfigured":
+            print("  [skip] No initialized user vault configured (run `skb init ~/notes --save-default` to enable).")
+        elif not _is_initialized_vault(active_vault):
+            print(_vault_error_message("organon finish", active_vault, vault_source), file=sys.stderr)
+            sys.exit(1)
+        else:
+            rc_kb = subprocess.run(
+                [sys.executable, "-m", "sovereign_kb.cli", "--vault", str(active_vault), "verify"],
+                check=False,
+            ).returncode
+            if rc_kb != 0:
+                sys.exit(rc_kb)
 
         print("\n=== [4/5] Anchoring RFC 6962 Merkle Attestation (`organon chain anchor`) ===")
         try:
@@ -969,13 +1178,39 @@ def main_cli(argv: list[str] | None = None) -> None:
         )
 
         print("\n=== [5/5] Synchronizing Organon Registry with Remote Peer ===")
-        sync_res = sync_organon_state_remote(peer=None, quiet=False)
-        if not sync_res.get("synced", False):
-            sys.exit(1)
+        configured_peer = (_get_cluster_env("KB_REMOTE_PEER") or "").strip()
+        if configured_peer:
+            sync_res = sync_organon_state_remote(peer=configured_peer, quiet=False)
+            if not sync_res.get("synced", False):
+                sys.exit(1)
+        else:
+            print("  Single-node mode (no KB_REMOTE_PEER configured) — local audit registry updated.")
 
         if parsed.message and not parsed.skip_push:
+            if vault_source == "unconfigured":
+                print(
+                    "[organon finish] Error: Cannot push vault commit (-m) because no initialized vault is configured.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             kb_bin = shutil.which("kb") or str(Path.home() / ".local" / "bin" / "kb")
-            sys.exit(subprocess.run([kb_bin, "push", "-m", parsed.message], check=False).returncode)
+            if active_vault == (Path.home() / "GitLab" / "me-kb").resolve() and Path(kb_bin).is_file():
+                sys.exit(subprocess.run([kb_bin, "push", "-m", parsed.message], check=False).returncode)
+            sys.exit(
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "sovereign_kb.cli",
+                        "--vault",
+                        str(active_vault),
+                        "push",
+                        "-m",
+                        parsed.message,
+                    ],
+                    check=False,
+                ).returncode
+            )
         return
 
 

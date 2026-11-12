@@ -14,7 +14,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,150 @@ from .gwi_core import GWI_STANDARD_VERSION
 
 _DEFAULT_AUDIT_REGISTRY_PATH = Path.home() / ".swm" / "audit_registry.json"
 AUDIT_REGISTRY_PATH = _DEFAULT_AUDIT_REGISTRY_PATH
+_STARTER_VAULT_DIR = (Path(__file__).resolve().parent / "starter_vault").resolve()
+_WARNED_SWM_BIN_VALUES: set[str] = set()
+
+
+def is_bundled_starter_vault_path(path: Path) -> bool:
+    """Return True if `path` (following symlinks and case-insensitive FS aliases) resolves to or inside `starter_vault`."""
+    try:
+        starter_stat = os.stat(_STARTER_VAULT_DIR)
+    except OSError:
+        starter_stat = None
+    expanded = path.expanduser()
+    try:
+        resolved = expanded.resolve()
+    except OSError:
+        resolved = expanded
+    for cand in (expanded, resolved, *expanded.parents, *resolved.parents):
+        if cand == _STARTER_VAULT_DIR:
+            return True
+        if starter_stat is not None:
+            try:
+                st = os.stat(cand)
+                if st.st_dev == starter_stat.st_dev and st.st_ino == starter_stat.st_ino:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def resolve_swm_bin() -> Path | None:
+    """Locate the optional `swm` (`software-machine`) Studio Engine binary.
+
+    Setting `SWM_BIN=""` explicitly forces Open-Core standalone mode (used by tests and CI).
+    """
+    if "SWM_BIN" in os.environ:
+        raw = os.environ["SWM_BIN"].strip()
+        if not raw:
+            return None
+        cand = Path(raw).expanduser()
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return cand.resolve()
+        if raw not in _WARNED_SWM_BIN_VALUES:
+            _WARNED_SWM_BIN_VALUES.add(raw)
+            print(
+                f"[organon] Warning: SWM_BIN='{raw}' is missing or non-executable; running in Open-Core mode.",
+                file=sys.stderr,
+            )
+        return None
+    which_swm = shutil.which("swm")
+    if which_swm:
+        return Path(which_swm).resolve()
+    local_swm = Path.home() / ".local" / "bin" / "swm"
+    if local_swm.is_file() and os.access(local_swm, os.X_OK):
+        return local_swm.resolve()
+    return None
+
+
+def resolve_organon_vault_state() -> tuple[Path, str]:
+    """Resolve the active Organon knowledge vault and its configuration provenance.
+
+    Returns `(vault_path, source)` where `source` is one of:
+      - `"env"`               : `ME_KB_DIR` or `KB_VAULT_DIR` explicitly set
+      - `"cwd"`               : `Path.cwd()` (or an ancestor) is an initialized vault
+      - `"config"`            : `~/.config/sovereign-kb/config.json` specifies `vault_dir`
+      - `"studio_default"`    : `~/GitLab/me-kb` exists on a Studio workstation
+      - `"default_existing"`  : `~/sovereign-kb-vault` exists and is initialized
+      - `"forbidden_starter"` : Explicit config/symlink targets read-only bundled `starter_vault`
+      - `"unconfigured"`      : No vault configured or initialized anywhere (never returns `starter_vault`)
+    """
+    for env_key in ("ME_KB_DIR", "KB_VAULT_DIR"):
+        env_val = os.environ.get(env_key, "").strip()
+        if env_val:
+            env_p = Path(env_val).expanduser().resolve()
+            if is_bundled_starter_vault_path(env_p):
+                return env_p, "forbidden_starter"
+            return env_p, "env"
+
+    ignore_default_mekb = os.environ.get("ORGANON_IGNORE_DEFAULT_ME_KB", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    default_mekb = (Path.home() / "GitLab" / "me-kb").resolve()
+
+    try:
+        cwd = Path.cwd().resolve()
+        for candidate in [cwd, *cwd.parents]:
+            if (
+                is_bundled_starter_vault_path(candidate)
+                or (candidate / "src" / "sovereign_kb" / "__init__.py").is_file()
+            ):
+                continue
+            if ignore_default_mekb and candidate == default_mekb:
+                continue
+            if (candidate / ".kb").is_dir() or (
+                (candidate / "INDEX.md").is_file() and (candidate / "00-identity").is_dir()
+            ):
+                return candidate, "cwd"
+    except OSError:
+        pass
+
+    cfg_path = Path.home() / ".config" / "sovereign-kb" / "config.json"
+    if cfg_path.is_file():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and str(cfg.get("vault_dir", "")).strip():
+                cfg_v = Path(str(cfg["vault_dir"]).strip()).expanduser().resolve()
+                if is_bundled_starter_vault_path(cfg_v):
+                    return cfg_v, "forbidden_starter"
+                if not (ignore_default_mekb and cfg_v == default_mekb):
+                    return cfg_v, "config"
+        except Exception:
+            pass
+
+    if not ignore_default_mekb and default_mekb.is_dir() and not is_bundled_starter_vault_path(default_mekb):
+        return default_mekb, "studio_default"
+
+    default_skb_space = Path.home() / "sovereign-kb-vault"
+    default_skb_vault = default_skb_space.resolve()
+    if (default_skb_space.is_symlink() or default_skb_space.exists()) and is_bundled_starter_vault_path(
+        default_skb_vault
+    ):
+        return default_skb_vault, "forbidden_starter"
+    if default_skb_vault.is_dir() and (
+        (default_skb_vault / ".kb").is_dir() or (default_skb_vault / "INDEX.md").is_file()
+    ):
+        return default_skb_vault, "default_existing"
+
+    return default_skb_vault, "unconfigured"
+
+
+def resolve_active_vault_dir() -> Path:
+    """Resolve the active Organon knowledge vault across Studio (`me-kb`) and Open-Core (`skb`) setups."""
+    vault_path, source = resolve_organon_vault_state()
+    if source == "forbidden_starter" or is_bundled_starter_vault_path(vault_path):
+        for cand in (Path.home() / "sovereign-kb-vault", Path.home() / ".swm" / "unconfigured-vault"):
+            if not is_bundled_starter_vault_path(cand):
+                return cand.resolve()
+        import tempfile
+
+        td_fallback = Path(tempfile.gettempdir()) / "sovereign-kb-unconfigured-vault"
+        if is_bundled_starter_vault_path(td_fallback):
+            raise ValueError("Bundled starter_vault cannot be used as active vault directory")
+        return td_fallback
+    return vault_path
 
 
 def _should_skip_default_registry_write(repo_root: Path) -> bool:
@@ -66,29 +212,56 @@ def find_git_root(path: Path) -> Path:
 
 
 def get_sovereign_versions() -> dict[str, str]:
-    """Return current versions and Git SHAs for `kb` (`sovereign-kb`), `gwi`, `swm`, and `me-kb`."""
-    skb_root = Path.home() / "Projects" / "sovereign-kb"
-    swm_root = Path.home() / "GitLab" / "software-machine"
-    mekb_root = Path.home() / "GitLab" / "me-kb"
+    """Return current versions and Git SHAs for `kb` (`sovereign-kb`), `gwi`, `swm`, and the active vault."""
+    pkg_repo = Path(__file__).resolve().parents[2]
+    skb_root = pkg_repo if (pkg_repo / ".git").exists() else (Path.home() / "Projects" / "sovereign-kb")
+    kb_sha = _run_git(skb_root, "rev-parse", "--short", "HEAD") if (skb_root / ".git").exists() else ""
 
-    kb_sha = _run_git(skb_root, "rev-parse", "--short", "HEAD") if skb_root.is_dir() else ""
-    swm_sha = _run_git(swm_root, "rev-parse", "--short", "HEAD") if swm_root.is_dir() else ""
-    mekb_sha = _run_git(mekb_root, "rev-parse", "--short", "HEAD") if mekb_root.is_dir() else ""
+    swm_bin = resolve_swm_bin()
+    if swm_bin is None:
+        swm_version = "open-core"
+        swm_sha_out = "not-installed"
+    else:
+        swm_root: Path | None = None
+        for cand in (
+            Path.home() / "Projects" / "software-machine",
+            Path.home() / "GitLab" / "software-machine",
+        ):
+            if cand.is_dir():
+                swm_root = cand
+                break
+        swm_sha = (
+            _run_git(swm_root, "rev-parse", "--short", "HEAD")
+            if (swm_root is not None and (swm_root / ".git").exists())
+            else ""
+        )
+        swm_version = "0.2.0"
+        if swm_root is not None:
+            swm_init = swm_root / "src" / "software_machine" / "__init__.py"
+            if swm_init.is_file():
+                m = re.search(
+                    r'__version__\s*=\s*["\']([^"\']+)["\']',
+                    swm_init.read_text(encoding="utf-8", errors="ignore"),
+                )
+                if m:
+                    swm_version = m.group(1)
+        swm_sha_out = swm_sha or "unknown"
 
-    swm_version = "0.2.0"
-    swm_init = swm_root / "src" / "software_machine" / "__init__.py"
-    if swm_init.is_file():
-        m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', swm_init.read_text(encoding="utf-8", errors="ignore"))
-        if m:
-            swm_version = m.group(1)
+    mekb_root, vault_source = resolve_organon_vault_state()
+    if vault_source in ("unconfigured", "forbidden_starter") or not mekb_root.is_dir():
+        mekb_sha_out = "unconfigured"
+    elif (mekb_root / ".git").exists():
+        mekb_sha_out = _run_git(mekb_root, "rev-parse", "--short", "HEAD") or "unknown"
+    else:
+        mekb_sha_out = "unknown"
 
     return {
         "kb_version": KB_VERSION,
         "kb_sha": kb_sha or "unknown",
         "gwi_version": GWI_STANDARD_VERSION,
         "swm_version": swm_version,
-        "swm_sha": swm_sha or "unknown",
-        "me_kb_sha": mekb_sha or "unknown",
+        "swm_sha": swm_sha_out,
+        "me_kb_sha": mekb_sha_out,
     }
 
 

@@ -119,6 +119,7 @@ def retrieve_from_vault(
     Standalone vault retrieval entrypoint for external callers (`software-machine`, `bridge`)
     that returns both declarative 4-way RRF chunks and procedural Soar `ChunkStore` matches.
     """
+    from sovereign_kb.audit_registry import is_bundled_starter_vault_path
     from sovereign_kb.cli import get_db, hybrid_retrieve
     from sovereign_kb.soar.chunk_store import ChunkStore
 
@@ -126,14 +127,14 @@ def retrieve_from_vault(
     declarative: list[dict[str, Any]] = []
     procedural: list[dict[str, Any]] = []
 
-    if (vdir / ".kb" / "index.db").is_file() or vdir.is_dir():
+    if not is_bundled_starter_vault_path(vdir) and ((vdir / ".kb" / "index.db").is_file() or vdir.is_dir()):
         conn = get_db(vdir)
         try:
             declarative = hybrid_retrieve(conn, vdir, query, top_k=top_k, engine=engine)
         finally:
             conn.close()
 
-    if include_procedural_chunks and vdir.is_dir():
+    if include_procedural_chunks and vdir.is_dir() and not is_bundled_starter_vault_path(vdir):
         try:
             cstore = ChunkStore.for_vault(vdir)
             procedural = cstore.search_chunks(query, limit=min(4, top_k))

@@ -130,10 +130,25 @@ def _get_config_path() -> Path:
     return Path.home() / ".config" / "sovereign-kb" / "config.json"
 
 
+def _reject_if_bundled_starter_vault(v: Path) -> None:
+    from .audit_registry import is_bundled_starter_vault_path
+
+    if is_bundled_starter_vault_path(v):
+        print(
+            "[skb] Error: Bundled 'starter_vault' is a read-only package template and cannot be used as a live vault. "
+            "Run 'skb init ~/notes --save-default' instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def resolve_vault_dir(explicit_vault: str | None = None, must_exist: bool = True) -> Path:
     """Resolve the active vault directory via CLI flag, env var, cwd walk-up, or user config."""
+    from .audit_registry import is_bundled_starter_vault_path
+
     if explicit_vault:
         v = Path(explicit_vault).expanduser().resolve()
+        _reject_if_bundled_starter_vault(v)
         if must_exist and not v.exists():
             print(f"[skb] Error: Vault directory '{v}' does not exist. Run 'skb init {v}' first.", file=sys.stderr)
             sys.exit(1)
@@ -142,6 +157,7 @@ def resolve_vault_dir(explicit_vault: str | None = None, must_exist: bool = True
     env_vault = os.environ.get("KB_VAULT_DIR")
     if env_vault:
         v = Path(env_vault).expanduser().resolve()
+        _reject_if_bundled_starter_vault(v)
         if must_exist and not v.exists():
             print(f"[skb] Error: Vault directory '{v}' does not exist. Run 'skb init {v}' first.", file=sys.stderr)
             sys.exit(1)
@@ -149,6 +165,8 @@ def resolve_vault_dir(explicit_vault: str | None = None, must_exist: bool = True
 
     cwd = Path.cwd().resolve()
     for candidate in [cwd, *cwd.parents]:
+        if is_bundled_starter_vault_path(candidate) or (candidate / "src" / "sovereign_kb" / "__init__.py").is_file():
+            continue
         if (candidate / ".kb").is_dir() or (
             (candidate / "INDEX.md").is_file() and (candidate / "00-identity").is_dir()
         ):
@@ -160,6 +178,7 @@ def resolve_vault_dir(explicit_vault: str | None = None, must_exist: bool = True
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             if cfg.get("vault_dir"):
                 v = Path(cfg["vault_dir"]).expanduser().resolve()
+                _reject_if_bundled_starter_vault(v)
                 if must_exist and not v.exists():
                     print(
                         f"[skb] Error: Configured vault directory '{v}' does not exist. Run 'skb init {v}' first.",
@@ -173,8 +192,13 @@ def resolve_vault_dir(explicit_vault: str | None = None, must_exist: bool = True
             pass
 
     default_vault = (Path.home() / "sovereign-kb-vault").resolve()
+    if is_bundled_starter_vault_path(default_vault):
+        _reject_if_bundled_starter_vault(default_vault)
     default_initialized = (default_vault / ".kb").is_dir() or (default_vault / "INDEX.md").is_file()
-    if not default_initialized and cwd != Path.home().resolve() and any(cwd.glob("*.md")):
+    is_pkg_or_starter_cwd = (
+        is_bundled_starter_vault_path(cwd) or (cwd / "src" / "sovereign_kb" / "__init__.py").is_file()
+    )
+    if not default_initialized and not is_pkg_or_starter_cwd and cwd != Path.home().resolve() and any(cwd.glob("*.md")):
         return cwd
 
     if must_exist and not default_initialized:
@@ -761,6 +785,7 @@ MINIMAL_STARTER_FILES: dict[str, str] = _build_minimal_starter_files()
 
 def cmd_init(args) -> None:
     target = Path(args.target_dir or (Path.home() / "sovereign-kb-vault")).expanduser().resolve()
+    _reject_if_bundled_starter_vault(target)
     force = getattr(args, "force", False)
     full = getattr(args, "full", False)
     minimal = getattr(args, "minimal", False) or not full
@@ -778,6 +803,8 @@ def cmd_init(args) -> None:
     else:
         for src_path in sorted(STARTER_VAULT_DIR.rglob("*")):
             rel = src_path.relative_to(STARTER_VAULT_DIR)
+            if any(part in (".kb", ".git", "__pycache__") or part.endswith(".pyc") for part in rel.parts):
+                continue
             dst_path = target / rel
             if src_path.is_dir():
                 dst_path.mkdir(parents=True, exist_ok=True)

@@ -17,6 +17,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from sovereign_kb.audit_registry import (
+    is_bundled_starter_vault_path,
+    resolve_organon_vault_state,
+)
 from sovereign_kb.gwi import evaluate_target
 from sovereign_kb.retrieval import retrieve_from_vault
 from sovereign_kb.soar import (
@@ -31,17 +35,29 @@ BRIDGE_CONTRACT_VERSION = "1.4.0"
 
 
 def default_triad_ledger_path(vault_dir: Path | None = None) -> Path:
+    import tempfile
+
     env_p = os.environ.get("SWM_TRIAD_LEDGER")
-    if env_p:
+    if env_p and not is_bundled_starter_vault_path(Path(env_p)):
         return Path(env_p).expanduser()
-    if vault_dir is not None and Path(vault_dir).is_dir():
+    if vault_dir is not None and Path(vault_dir).is_dir() and not is_bundled_starter_vault_path(Path(vault_dir)):
         return Path(vault_dir) / ".kb" / "triad-provenance-ledger.jsonl"
     if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("SWM_HOME"):
-        import tempfile
-
-        return Path(tempfile.gettempdir()) / "pytest_triad_provenance_ledger.jsonl"
+        td_pytest = Path(tempfile.gettempdir()) / "pytest_triad_provenance_ledger.jsonl"
+        if not is_bundled_starter_vault_path(td_pytest):
+            return td_pytest
     swm_home = Path(os.environ.get("SWM_HOME", str(Path.home() / ".swm"))).expanduser()
-    return swm_home / "triad_provenance_ledger.jsonl"
+    swm_ledger = swm_home / "triad_provenance_ledger.jsonl"
+    if not is_bundled_starter_vault_path(swm_ledger):
+        return swm_ledger
+    for fallback in (
+        Path.home() / ".swm" / "triad_provenance_ledger.jsonl",
+        Path(tempfile.gettempdir()) / "triad_provenance_ledger.jsonl",
+        Path("/tmp") / "triad_provenance_ledger.jsonl",
+    ):
+        if not is_bundled_starter_vault_path(fallback):
+            return fallback
+    raise ValueError("Refusing to resolve triad provenance ledger inside bundled starter_vault")
 
 
 def append_triad_provenance_event(
@@ -58,7 +74,12 @@ def append_triad_provenance_event(
     Append a tamper-evident SHA-256 hash-chained event across the Cognitive Triad
     (`rsi.policy_tuned`, `swm.stage_completed`, `gwi.evaluated`, `soar.chunk_compiled`).
     """
-    lp = Path(ledger_file) if ledger_file is not None else default_triad_ledger_path()
+    if ledger_file is not None and not is_bundled_starter_vault_path(Path(ledger_file)):
+        lp = Path(ledger_file)
+    else:
+        lp = default_triad_ledger_path()
+    if is_bundled_starter_vault_path(lp):
+        raise ValueError(f"Refusing to write provenance ledger inside bundled starter_vault: {lp}")
     lp.parent.mkdir(parents=True, exist_ok=True)
     prev_hash = "0" * 64
     seq = 1
@@ -113,9 +134,14 @@ def append_triad_provenance_event(
         and not os.environ.get("SWM_TRIAD_LEDGER", "").strip()
         and not os.environ.get("PYTEST_CURRENT_TEST")
     ):
-        me_kb_root = Path(os.environ.get("ME_KB_DIR", str(Path.home() / "GitLab" / "me-kb"))).expanduser()
+        me_kb_root, vault_src = resolve_organon_vault_state()
         me_kb_ledger = me_kb_root / ".kb" / "triad-provenance-ledger.jsonl"
-        if me_kb_ledger.parent.is_dir() and me_kb_ledger.resolve() != lp.resolve():
+        if (
+            vault_src not in ("unconfigured", "forbidden_starter")
+            and not is_bundled_starter_vault_path(me_kb_root)
+            and me_kb_ledger.parent.is_dir()
+            and me_kb_ledger.resolve() != lp.resolve()
+        ):
             try:
                 src_lines = [ln for ln in lp.read_text(encoding="utf-8").splitlines() if ln.strip()]
                 dst_lines = (
@@ -164,13 +190,16 @@ def retrieve_vault_precedents(
     """
     Retrieve declarative vault notes and procedural Soar `ChunkStore` rules for a Work Package or query.
     """
-    return retrieve_from_vault(
+    res = retrieve_from_vault(
         vault_dir=Path(vault_dir),
         query=query,
         top_k=top_k,
         engine="auto",
         include_procedural_chunks=True,
     )
+    res.setdefault("contract_version", BRIDGE_CONTRACT_VERSION)
+    res.setdefault("declarative_hits", res.get("declarative_chunks", []))
+    return res
 
 
 def evaluate_worktree_gwi(
@@ -203,7 +232,14 @@ def record_gwi_outcome_feedback(
     calc = report.get("calculation") or {}
     cl = report.get("craft_lenses") or {}
     blockers = list(report.get("blockers") or [])
-    target_ledger = (Path(vault_dir) / ".kb" / "triad-provenance-ledger.jsonl") if vault_dir is not None else None
+    if vault_dir is not None:
+        vdir = Path(vault_dir)
+        vault_usable = not is_bundled_starter_vault_path(vdir)
+        target_ledger = (vdir / ".kb" / "triad-provenance-ledger.jsonl") if vault_usable else None
+    else:
+        vdir, v_src = resolve_organon_vault_state()
+        vault_usable = v_src not in ("unconfigured", "forbidden_starter") and not is_bundled_starter_vault_path(vdir)
+        target_ledger = None
     ev = append_triad_provenance_event(
         event_type="gwi.evaluated",
         payload={
@@ -221,13 +257,8 @@ def record_gwi_outcome_feedback(
         commit_sha=commit_sha,
     )
 
-    vdir = (
-        Path(vault_dir)
-        if vault_dir is not None
-        else Path(os.environ.get("ME_KB_DIR", str(Path.home() / "GitLab" / "me-kb"))).expanduser()
-    )
     probes_added = 0
-    if blockers and vdir.is_dir() and (vdir / ".kb").is_dir():
+    if blockers and vault_usable and vdir.is_dir() and (vdir / ".kb").is_dir():
         probes_path = vdir / ".kb" / "gwi_outcome_probes.json"
         existing: list[dict[str, str]] = []
         if probes_path.is_file():
@@ -417,7 +448,8 @@ def run_triad_end_to_end_canary(vault_dir: Path | None = None) -> dict[str, Any]
       2. Soar 9.6 decision cycle + Explanation-Based Chunking + 0-impasse replay
       3. Goldwood Index (GWI+ v1.4.0) kernel verification (`compute_goldwood_index`)
     """
-    vdir = Path(vault_dir) if vault_dir is not None else (Path(__file__).resolve().parent / "starter_vault")
+    import tempfile
+
     cands = [
         {
             "rel_path": "02-operating-system/autonomous-engineering-framework.md",
@@ -426,12 +458,21 @@ def run_triad_end_to_end_canary(vault_dir: Path | None = None) -> dict[str, Any]
         },
         {"rel_path": "04-episodic/2026-10-29-log.md", "doc_type": "episodic", "rrf_score": 0.039},
     ]
-    tie_res = resolve_retrieval_tie_with_soar(
-        vault_dir=vdir,
-        query="autonomous engineering quality gate",
-        candidates=cands,
-        persist_chunks=False,
-    )
+    if vault_dir is not None and not is_bundled_starter_vault_path(Path(vault_dir)):
+        tie_res = resolve_retrieval_tie_with_soar(
+            vault_dir=Path(vault_dir),
+            query="autonomous engineering quality gate",
+            candidates=cands,
+            persist_chunks=False,
+        )
+    else:
+        with tempfile.TemporaryDirectory(prefix="skb-canary-") as td:
+            tie_res = resolve_retrieval_tie_with_soar(
+                vault_dir=Path(td),
+                query="autonomous engineering quality gate",
+                candidates=cands,
+                persist_chunks=False,
+            )
     soar_ok = bool(tie_res.get("goal_achieved") and tie_res.get("zero_impasse_replay"))
     return {
         "contract_version": BRIDGE_CONTRACT_VERSION,
