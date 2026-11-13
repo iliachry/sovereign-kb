@@ -1,12 +1,12 @@
 ---
 title: "Lens L2: Principal UX, Spatial Ergonomics & Conversion Designer"
 type: operating-system
-updated: 2026-10-29
+updated: 2026-11-13
 tags: [lens, ux, ergonomics, interaction-design, conversion, wcag, hud, chameleon, verga]
 lens_id: ux-ergonomics
 pole: verga
 applies_to: ["**/routes/**", "**/pages/**", "**/components/**", "**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.css"]
-applies_when_deps: ["react", "react-dom", "next", "tailwindcss", "lucide-react"]
+applies_when_deps: ["react", "react-dom", "next", "tailwindcss", "lucide-react", "@astryxdesign/core", "@stylexjs/stylex"]
 related:
   - "[[02-operating-system/lenses/README-lenses]]"
   - "[[02-operating-system/goldwood-index-gwi-standard]]"

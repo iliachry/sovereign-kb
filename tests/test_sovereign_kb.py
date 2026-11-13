@@ -615,7 +615,8 @@ def test_gwi_calculator_barrier_and_profiles(
         "principal-verification",
         "science-integrity",
     }
-    assert sum(v["skills_count"] for v in lenses_catalog.values()) in (146, 150)
+    assert sum(v["skills_count"] for v in lenses_catalog.values()) == 151
+    assert "@astryxdesign/core" in lenses_catalog["ux-ergonomics"]["trigger_deps"]
 
     # Inject literal Markdown **bold** leak into .tex
     tex_file.write_text(
@@ -2172,10 +2173,16 @@ def test_creative_mode_resumption_packet_f15(tmp_path: Path, capsys: pytest.Capt
     assert "paper2-hierarchical-edge-cloud" in payload["packets"]["math"]["body"]
 
     # Verify _parse_skill_description parity between PyYAML and stdlib fallback across block/quoted scalars
-    from sovereign_kb.cli import GWI_LENS_SKILL_ROUTING, _parse_skill_description
+    from sovereign_kb.cli import GWI_LENS_SKILL_ROUTING, GWI_PROFILE_SKILL_ROUTING, _parse_skill_description
 
     assert "personal-kb" in GWI_LENS_SKILL_ROUTING["principal-verification"]
     assert "personal-codex" not in GWI_LENS_SKILL_ROUTING["principal-verification"]
+    assert "astryx-design" in GWI_PROFILE_SKILL_ROUTING["app"]
+    assert "astryx-design" in GWI_LENS_SKILL_ROUTING["ux-ergonomics"]
+    main(["skills", "--profile", "app"])
+    assert "astryx-design" in capsys.readouterr().out
+    main(["skills", "--lens", "ux-ergonomics"])
+    assert "astryx-design" in capsys.readouterr().out
     cases = [
         ('---\nname: s1\ndescription: "|"\n---\n', "|"),
         ("---\nname: s2\ndescription: >- # summary\n\n  alpha\n  beta\n---\n", "alpha beta"),
