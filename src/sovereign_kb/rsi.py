@@ -874,8 +874,9 @@ def heal_and_consolidate_vault(
                 "1. **Lyapunov Non-Regression Gate**: Every consolidation or `.kb/retrieval_policy.json` update must preserve $J(\\theta_{t+1}, K_{t+1}) \\ge J(\\theta_t, K_t)$ across both baseline and held-out retrieval probes with `0` ledger intrusions.\n"
                 "2. **5-Gate Structural Invariance**: All distilled notes must maintain valid YAML frontmatter, zero broken `[[wikilinks]]`, and $\\ge 1$ inbound graph edge from [[INDEX]].\n"
             )
-            distill_path.parent.mkdir(parents=True, exist_ok=True)
-            distill_path.write_text(distill_content, encoding="utf-8")
+            if snapshots.get(distill_path) != distill_content or not distill_path.is_file():
+                distill_path.parent.mkdir(parents=True, exist_ok=True)
+                distill_path.write_text(distill_content, encoding="utf-8")
         elif distill_path.exists():
             distill_path.unlink(missing_ok=True)
 

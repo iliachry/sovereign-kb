@@ -3309,3 +3309,285 @@ def test_swm_rsi_probe_distillation_and_episodic_delivery_bridge(tmp_path: Path)
         date_str="2026-11-10",
     )
     assert log_path.read_text(encoding="utf-8").count("## SWM Autonomous Delivery — `swm-op1766-a2`") == 1
+
+
+def test_hybrid_retrieve_corpus_and_embedding_cache_equivalence_and_invalidation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F-06 / F-10: Verify corpus + embedding caches are bit-identical, deduplicate probe HTTP calls, invalidate on DB changes, and skip no-op consolidation writes."""
+    import urllib.request
+
+    from sovereign_kb import cli as cli_mod
+    from sovereign_kb.rsi import build_benchmark_suite, tune_retrieval_policy
+
+    monkeypatch.delenv("KB_NO_EMBED", raising=False)
+    monkeypatch.setenv("KB_HIPS_BIN", "")
+    monkeypatch.setattr(cli_mod, "_EMBED_CIRCUIT_OPEN", False)
+    monkeypatch.setattr(cli_mod, "_ACTIVE_EMBED_URL", None)
+    cli_mod._EMBED_QUERY_CACHE.clear()
+    cli_mod._VAULT_CORPUS_CACHE.clear()
+
+    embed_calls: dict[str, int] = {}
+
+    class _FakeResp:
+        def __init__(self, payload_bytes: bytes) -> None:
+            self._data = payload_bytes
+
+        def read(self) -> bytes:
+            return self._data
+
+        def __enter__(self) -> "_FakeResp":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    def _fake_urlopen(req, *args, **kwargs):
+        import re
+        import zlib
+
+        body = json.loads(req.data.decode("utf-8"))
+        prompt = str(body.get("prompt", ""))
+        embed_calls[prompt] = embed_calls.get(prompt, 0) + 1
+        vec = [0.001] * 64
+        for tok in re.findall(r"\w+", prompt.lower()):
+            vec[zlib.crc32(tok.encode("utf-8")) % 64] += 1.0
+        return _FakeResp(json.dumps({"embedding": vec}).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    vault = tmp_path / "perf-vault"
+    main(["init", str(vault), "--full"])
+    capsys.readouterr()
+
+    embed_calls.clear()
+    cli_mod._EMBED_QUERY_CACHE.clear()
+    cli_mod._VAULT_CORPUS_CACHE.clear()
+
+    conn = get_db(vault)
+    try:
+        probes = build_benchmark_suite(conn, vault)
+        assert len(probes) >= 4
+        tuning = tune_retrieval_policy(conn, vault, hybrid_retrieve)
+        assert tuning["candidates_evaluated"] >= 20
+        assert embed_calls, "Expected embedding calls during tune_retrieval_policy"
+        assert all(count == 1 for count in embed_calls.values()), (
+            f"Expected at most 1 embedding HTTP call per unique query, got: {embed_calls}"
+        )
+
+        # Warm vs cold equivalence across plain, identifier, and Greek/accented queries
+        test_queries = [
+            probes[0]["query"],
+            "GWI-APP-U05 autonomous engineering",
+            "Αρχιτεκτονική και κανονικότητα",
+        ]
+        for q in test_queries:
+            warm_res = hybrid_retrieve(conn, vault, q, top_k=5)
+            cli_mod._VAULT_CORPUS_CACHE.clear()
+            cli_mod._EMBED_QUERY_CACHE.clear()
+            cold_res = hybrid_retrieve(conn, vault, q, top_k=5)
+            assert warm_res == cold_res
+    finally:
+        conn.close()
+
+    # Capture a new note, sync, and verify corpus cache invalidates immediately
+    main(
+        [
+            "--vault",
+            str(vault),
+            "capture",
+            "--sync",
+            "Implemented symplectic integrator verification milestone.",
+        ]
+    )
+    capsys.readouterr()
+    conn2 = get_db(vault)
+    try:
+        new_hits = hybrid_retrieve(
+            conn2,
+            vault,
+            "symplectic integrator",
+            top_k=5,
+            doc_type_filter="episodic",
+        )
+        assert new_hits and "symplectic integrator" in new_hits[0]["content"].lower()
+    finally:
+        conn2.close()
+
+    # Back-to-back RSI cycles with no changes skip rewriting autonomous-rsi-distillations.md
+    main(["--vault", str(vault), "rsi", "cycle", "--json"])
+    capsys.readouterr()
+    distill_file = vault / "02-operating-system" / "autonomous-rsi-distillations.md"
+    assert distill_file.is_file()
+    mtime_after_first = distill_file.stat().st_mtime_ns
+
+    main(["--vault", str(vault), "rsi", "cycle", "--json"])
+    capsys.readouterr()
+    assert distill_file.stat().st_mtime_ns == mtime_after_first
+
+    # 5. Regression: rollback invalidation, cross-conn WAL invalidation, :memory: isolation,
+    #    malformed [null] vector resilience, thread-safe LRU clearing, and HIPS failure recovery
+    import sqlite3
+    import threading
+
+    from sovereign_kb.cli import _create_tables
+
+    # 5a. Direct uncommitted insert -> visible -> rollback -> gone (no cmd_sync)
+    conn_rw = get_db(vault)
+    try:
+        # Warm cache cleanly first
+        assert not any(
+            "rollback ghost marker" in h["content"].lower()
+            for h in hybrid_retrieve(conn_rw, vault, "rollback ghost marker", top_k=5)
+        )
+        conn_rw.execute(
+            "INSERT INTO documents (rel_path, title, doc_type, tier, updated, tags, mtime, content) "
+            "VALUES ('03-life-domains/ghost.md', 'Ghost', 'domain', '1', '2026-11-17', 'ghost', 1.0, 'rollback ghost marker')"
+        )
+        conn_rw.execute(
+            "INSERT INTO chunks (rel_path, title, doc_type, tags, heading, heading_path, start_line, end_line, content, folded_content, is_vector_eligible, embedding) "
+            "VALUES ('03-life-domains/ghost.md', 'Ghost', 'domain', 'ghost', 'Ghost', 'Ghost', 1, 2, 'rollback ghost marker', 'rollback ghost marker', 0, '[null]')"
+        )
+        cid_ghost = conn_rw.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn_rw.execute(
+            "INSERT INTO chunks_fts (rowid, rel_path, title, doc_type, tags, heading_path, content, folded_content) "
+            "VALUES (?, '03-life-domains/ghost.md', 'Ghost', 'domain', 'ghost', 'Ghost', 'rollback ghost marker', 'rollback ghost marker')",
+            (cid_ghost,),
+        )
+        assert any(
+            "rollback ghost marker" in h["content"].lower()
+            for h in hybrid_retrieve(conn_rw, vault, "rollback ghost marker", top_k=5)
+        )
+        conn_rw.rollback()
+        assert not any(
+            "rollback ghost marker" in h["content"].lower()
+            for h in hybrid_retrieve(conn_rw, vault, "rollback ghost marker", top_k=5)
+        )
+    finally:
+        conn_rw.close()
+
+    # 5b. Cross-connection committed WAL write invalidates an existing read connection without cmd_sync,
+    #     and malformed [null] JSON embedding never breaks lexical or vector-enabled retrieval
+    conn_reader = get_db(vault)
+    conn_writer = get_db(vault)
+    try:
+        assert not any(
+            "crossconn wal sentinel" in h["content"].lower()
+            for h in hybrid_retrieve(conn_reader, vault, "crossconn wal sentinel", top_k=5)
+        )
+        conn_writer.execute(
+            "INSERT INTO documents (rel_path, title, doc_type, tier, updated, tags, mtime, content) "
+            "VALUES ('03-life-domains/wal-sentinel.md', 'WAL', 'domain', '1', '2026-11-17', 'wal', 1.0, 'crossconn wal sentinel')"
+        )
+        conn_writer.execute(
+            "INSERT INTO chunks (rel_path, title, doc_type, tags, heading, heading_path, start_line, end_line, content, folded_content, is_vector_eligible, embedding) "
+            "VALUES ('03-life-domains/wal-sentinel.md', 'WAL', 'domain', 'wal', 'WAL', 'WAL', 1, 2, 'crossconn wal sentinel', 'crossconn wal sentinel', 0, '[null]')"
+        )
+        cid_wal = conn_writer.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn_writer.execute(
+            "INSERT INTO chunks_fts (rowid, rel_path, title, doc_type, tags, heading_path, content, folded_content) "
+            "VALUES (?, '03-life-domains/wal-sentinel.md', 'WAL', 'domain', 'wal', 'WAL', 'crossconn wal sentinel', 'crossconn wal sentinel')",
+            (cid_wal,),
+        )
+        conn_writer.commit()
+        assert any(
+            "crossconn wal sentinel" in h["content"].lower()
+            for h in hybrid_retrieve(conn_reader, vault, "crossconn wal sentinel", top_k=5)
+        )
+        monkeypatch.setenv("KB_NO_EMBED", "1")
+        assert any(
+            "crossconn wal sentinel" in h["content"].lower()
+            for h in hybrid_retrieve(conn_reader, vault, "crossconn wal sentinel", top_k=5)
+        )
+        monkeypatch.delenv("KB_NO_EMBED", raising=False)
+    finally:
+        conn_writer.close()
+        conn_reader.close()
+
+    # 5c. Independent :memory: DBs never alias even after closing and reusing connection slots
+    for marker in ("alphaquadrant", "betazeta"):
+        mem_conn = sqlite3.connect(":memory:")
+        mem_conn.row_factory = sqlite3.Row
+        _create_tables(mem_conn)
+        mem_conn.execute(
+            "INSERT INTO documents (rel_path, title, doc_type, tier, updated, tags, mtime, content) "
+            "VALUES ('03-life-domains/mem.md', 'Mem', 'domain', '1', '2026-11-17', 'mem', 1.0, ?)",
+            (marker,),
+        )
+        mem_conn.execute(
+            "INSERT INTO chunks (rel_path, title, doc_type, tags, heading, heading_path, start_line, end_line, content, folded_content, is_vector_eligible, embedding) "
+            "VALUES ('03-life-domains/mem.md', 'Mem', 'domain', 'mem', 'Mem', 'Mem', 1, 2, ?, ?, 0, NULL)",
+            (marker, marker),
+        )
+        mem_cid = mem_conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        mem_conn.execute(
+            "INSERT INTO chunks_fts (rowid, rel_path, title, doc_type, tags, heading_path, content, folded_content) "
+            "VALUES (?, '03-life-domains/mem.md', 'Mem', 'domain', 'mem', 'Mem', ?, ?)",
+            (mem_cid, marker, marker),
+        )
+        mem_conn.commit()
+        hits = hybrid_retrieve(mem_conn, vault, marker, top_k=5)
+        assert hits and marker in hits[0]["content"]
+        other = "betazeta" if marker == "alphaquadrant" else "alphaquadrant"
+        assert not hybrid_retrieve(mem_conn, vault, other, top_k=5)
+        mem_conn.close()
+        del mem_conn
+
+    # 5d. Concurrent cache invalidation under multi-threaded retrieval produces zero KeyErrors
+    errors: list[BaseException] = []
+    stop_flag = threading.Event()
+
+    def _clear_worker() -> None:
+        try:
+            while not stop_flag.is_set():
+                with cli_mod._CACHE_LOCK:
+                    cli_mod._VAULT_CORPUS_CACHE.clear()
+                    cli_mod._EMBED_QUERY_CACHE.clear()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _search_worker(q_idx: int) -> None:
+        c_local = get_db(vault)
+        try:
+            for _ in range(15):
+                hybrid_retrieve(c_local, vault, f"symplectic query {q_idx % 3}", top_k=3)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            c_local.close()
+
+    clearer = threading.Thread(target=_clear_worker)
+    clearer.start()
+    workers = [threading.Thread(target=_search_worker, args=(i,)) for i in range(4)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    stop_flag.set()
+    clearer.join()
+    assert not errors, f"Concurrent cache invalidation failed: {errors}"
+
+    # 5e. Failed HIPS rebuild leaves no stale .hips-sync-ok marker so next no-op sync retries
+    hips_dir = vault / ".kb" / "hips-index"
+    hips_dir.mkdir(parents=True, exist_ok=True)
+    (hips_dir / ".hips-sync-ok").write_text("999", encoding="utf-8")
+    fake_hips = tmp_path / "fake-hips.sh"
+    fake_hips.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_hips.chmod(0o755)
+    monkeypatch.setenv("KB_HIPS_BIN", str(fake_hips))
+    hips_calls = 0
+    orig_sub_run = subprocess.run
+
+    def _count_hips_run(cmd, *args, **kwargs):
+        nonlocal hips_calls
+        if cmd and str(cmd[0]) == str(fake_hips):
+            hips_calls += 1
+        return orig_sub_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _count_hips_run)
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+    assert not (hips_dir / ".hips-sync-ok").exists()
+    main(["--vault", str(vault), "sync", "--no-embed"])
+    capsys.readouterr()
+    assert hips_calls == 2, f"Expected second no-op sync to retry failed HIPS rebuild, got {hips_calls} call(s)"

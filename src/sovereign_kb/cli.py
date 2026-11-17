@@ -27,6 +27,7 @@ import datetime
 import hashlib
 import json
 import math
+import operator
 import os
 import re
 import shutil
@@ -35,11 +36,15 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 try:
     import fcntl
@@ -214,6 +219,8 @@ def resolve_vault_dir(explicit_vault: str | None = None, must_exist: bool = True
 
 def fold_accents(text: str) -> str:
     """Casefold and strip combining diacritics (supports Greek polytonic/monotonic & Latin)."""
+    if text.isascii():
+        return text.lower()
     decomp = unicodedata.normalize("NFD", text.casefold())
     stripped = "".join(ch for ch in decomp if unicodedata.category(ch) != "Mn")
     return unicodedata.normalize("NFC", stripped)
@@ -593,14 +600,26 @@ def split_markdown_chunks(text: str, title: str) -> list[tuple[str, str, int, in
     return chunks
 
 
+_CACHE_LOCK = threading.RLock()
 _EMBED_CIRCUIT_OPEN: bool = False
+_EMBED_QUERY_CACHE: OrderedDict[tuple[str, tuple[str, ...], int, str], tuple[float, ...]] = OrderedDict()
+_EMBED_QUERY_CACHE_MAX = 512
 
 
 def get_embedding(text: str) -> list[float] | None:
     global _ACTIVE_EMBED_URL, _EMBED_CIRCUIT_OPEN
     if os.environ.get("KB_NO_EMBED") == "1" or _EMBED_CIRCUIT_OPEN:
         return None
-    candidates = [_ACTIVE_EMBED_URL] if _ACTIVE_EMBED_URL else get_embed_endpoints()
+
+    endpoints = tuple(get_embed_endpoints())
+    cache_key = (EMBED_MODEL, endpoints, id(urllib.request.urlopen), text[:3600])
+    with _CACHE_LOCK:
+        cached_vec = _EMBED_QUERY_CACHE.get(cache_key)
+        if cached_vec is not None:
+            _EMBED_QUERY_CACHE.move_to_end(cache_key)
+            return list(cached_vec)
+
+    candidates = [_ACTIVE_EMBED_URL] if _ACTIVE_EMBED_URL else list(endpoints)
 
     for url in candidates:
         if not url:
@@ -619,6 +638,11 @@ def get_embedding(text: str) -> list[float] | None:
                     vec = data.get("embedding")
                     if isinstance(vec, list) and len(vec) > 0:
                         _ACTIVE_EMBED_URL = url
+                        with _CACHE_LOCK:
+                            _EMBED_QUERY_CACHE[cache_key] = tuple(float(x) for x in vec)
+                            _EMBED_QUERY_CACHE.move_to_end(cache_key)
+                            if len(_EMBED_QUERY_CACHE) > _EMBED_QUERY_CACHE_MAX:
+                                _EMBED_QUERY_CACHE.popitem(last=False)
                         return vec
             except urllib.error.HTTPError:
                 continue
@@ -1086,7 +1110,23 @@ def cmd_sync(args) -> None:
     total_docs = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     total_chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
     total_links = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
-    hips_ok, hips_chunks = sync_hips_index(conn, vault_dir)
+    hips_idx_dir = vault_dir / ".kb" / "hips-index"
+    hips_marker = hips_idx_dir / ".hips-sync-ok"
+    db_file = vault_dir / ".kb" / "index.db"
+    hips_up_to_date = False
+    if updated_count == 0 and not removed_paths and not getattr(args, "force", False) and hips_marker.is_file():
+        with contextlib.suppress(OSError):
+            hips_up_to_date = (
+                hips_marker.read_text(encoding="utf-8", errors="ignore").strip() == str(total_chunks)
+                and db_file.stat().st_mtime_ns <= hips_marker.stat().st_mtime_ns
+            )
+    if not hips_up_to_date:
+        with _CACHE_LOCK:
+            _VAULT_CORPUS_CACHE.clear()
+        hips_ok, hips_chunks = sync_hips_index(conn, vault_dir)
+    else:
+        hips_ok = bool(resolve_hips_bin()) and hips_idx_dir.is_dir()
+        hips_chunks = total_chunks if hips_ok else 0
     conn.close()
     if not getattr(args, "quiet", False):
         hips_msg = f", {hips_chunks} chunks in hips Block-Max WAND index" if hips_ok else ""
@@ -1171,15 +1211,19 @@ def sync_hips_index(conn: sqlite3.Connection, vault_dir: Path) -> tuple[bool, in
         )
         if proc.returncode != 0 or not tmp_idx_dir.is_dir():
             shutil.rmtree(tmp_idx_dir, ignore_errors=True)
+            (hips_idx_dir / ".hips-sync-ok").unlink(missing_ok=True)
             return False, 0
 
+        (tmp_idx_dir / ".hips-sync-ok").write_text(str(len(rows)), encoding="utf-8")
         if old_idx_dir.exists():
             shutil.rmtree(old_idx_dir, ignore_errors=True)
         if hips_idx_dir.exists():
             os.replace(hips_idx_dir, old_idx_dir)
         os.replace(tmp_idx_dir, hips_idx_dir)
         shutil.rmtree(old_idx_dir, ignore_errors=True)
-        _HIPS_QUERY_CACHE.clear()
+        with _CACHE_LOCK:
+            _HIPS_QUERY_CACHE.clear()
+            _VAULT_CORPUS_CACHE.clear()
         return hips_idx_dir.is_dir(), len(rows)
     finally:
         tmp_jsonl.unlink(missing_ok=True)
@@ -1189,16 +1233,20 @@ def sync_hips_index(conn: sqlite3.Connection, vault_dir: Path) -> tuple[bool, in
             shutil.rmtree(old_idx_dir, ignore_errors=True)
 
 
-_HIPS_QUERY_CACHE: dict[
-    tuple[str, str, int, float], tuple[dict[tuple[str, int, int], int], dict[tuple[str, int, int], float]]
-] = {}
+_HIPS_QUERY_CACHE: OrderedDict[
+    tuple[str, str, int, float], tuple[MappingProxyType[Any, Any], MappingProxyType[Any, Any]]
+] = OrderedDict()
+_HIPS_QUERY_CACHE_MAX = 512
 
 
 def hips_retrieve(
     vault_dir: Path,
     query: str,
     limit: int = 35,
-) -> tuple[dict[tuple[str, int, int], int], dict[tuple[str, int, int], float]]:
+) -> tuple[
+    dict[tuple[str, int, int], int] | MappingProxyType[Any, Any],
+    dict[tuple[str, int, int], float] | MappingProxyType[Any, Any],
+]:
     """Run sub-millisecond Block-Max WAND search via `hips` over `.kb/hips-index`."""
     hips_bin = resolve_hips_bin()
     hips_idx_dir = vault_dir / ".kb" / "hips-index"
@@ -1207,8 +1255,11 @@ def hips_retrieve(
 
     idx_mtime = hips_idx_dir.stat().st_mtime
     cache_key = (str(hips_idx_dir), query, limit, idx_mtime)
-    if cache_key in _HIPS_QUERY_CACHE:
-        return _HIPS_QUERY_CACHE[cache_key]
+    with _CACHE_LOCK:
+        cached_hips = _HIPS_QUERY_CACHE.get(cache_key)
+        if cached_hips is not None:
+            _HIPS_QUERY_CACHE.move_to_end(cache_key)
+            return cached_hips
 
     folded_q = fold_accents(query)
     hips_query = query if folded_q == query.casefold() else f"{query} {folded_q}"
@@ -1248,8 +1299,160 @@ def hips_retrieve(
                 rank_idx += 1
         except Exception:
             continue
-    _HIPS_QUERY_CACHE[cache_key] = (ranks, scores)
-    return ranks, scores
+    res = (MappingProxyType(ranks), MappingProxyType(scores))
+    with _CACHE_LOCK:
+        _HIPS_QUERY_CACHE[cache_key] = res
+        _HIPS_QUERY_CACHE.move_to_end(cache_key)
+        if len(_HIPS_QUERY_CACHE) > _HIPS_QUERY_CACHE_MAX:
+            _HIPS_QUERY_CACHE.popitem(last=False)
+    return res
+
+
+_VAULT_CORPUS_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+_VAULT_CORPUS_CACHE_MAX = 4
+_VEC_RANK_CACHE_MAX = 256
+
+
+def _db_state_token(conn: sqlite3.Connection, vault_dir: Path) -> tuple[Any, ...] | None:
+    """Return a cache-invalidation key for clean committed file-backed DB connections, or None to bypass cache."""
+    if conn.in_transaction or conn.total_changes > 0:
+        return None
+    main_db_file = ""
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if row[1] == "main":
+            main_db_file = str(row[2] or "")
+            break
+    if not main_db_file:
+        return None
+    db_path = Path(main_db_file)
+    wal_path = Path(f"{main_db_file}-wal")
+    try:
+        st = db_path.stat()
+        db_sig = (st.st_ino, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    try:
+        wst = wal_path.stat()
+        wal_sig = (wst.st_mtime_ns, wst.st_size)
+    except OSError:
+        wal_sig = (0, 0)
+    schema_ver = conn.execute("PRAGMA schema_version").fetchone()[0]
+    data_ver = conn.execute("PRAGMA data_version").fetchone()[0]
+    return (main_db_file, db_sig, wal_sig, schema_ver, data_ver)
+
+
+def _load_corpus_vectors(
+    conn: sqlite3.Connection,
+) -> tuple[list[tuple[int, str, array.array[Any], float]], list[tuple[int, str]]]:
+    vec_entries: list[tuple[int, str, array.array[Any], float]] = []
+    zero_vec_entries: list[tuple[int, str]] = []
+    for r in conn.execute("SELECT id, rel_path, embedding FROM chunks WHERE embedding IS NOT NULL"):
+        raw_emb = r["embedding"]
+        if not raw_emb:
+            continue
+        try:
+            if isinstance(raw_emb, (bytes, bytearray)):
+                if len(raw_emb) % 4 != 0:
+                    continue
+                c_vec = array.array("f", raw_emb)
+            elif isinstance(raw_emb, str):
+                parsed = json.loads(raw_emb)
+                if not isinstance(parsed, list):
+                    continue
+                c_vec = array.array("f", parsed)
+            else:
+                continue
+            c_norm = math.sqrt(sum(x * x for x in c_vec))
+        except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+            continue
+        if not math.isfinite(c_norm):
+            continue
+        if c_norm > 0.0:
+            vec_entries.append((r["id"], r["rel_path"], c_vec, c_norm))
+        else:
+            zero_vec_entries.append((r["id"], r["rel_path"]))
+    return vec_entries, zero_vec_entries
+
+
+def _build_vault_corpus(conn: sqlite3.Connection) -> dict[str, Any]:
+    doc_meta = {
+        r["rel_path"]: dict(r)
+        for r in conn.execute("SELECT rel_path, title, doc_type, tier, updated, tags FROM documents")
+    }
+
+    chunks: dict[int, dict[str, Any]] = {}
+    doc_to_cids: dict[str, list[int]] = {}
+    hkey_to_cids: dict[tuple[str, int, int], list[int]] = {}
+    for r in conn.execute("SELECT id, rel_path, heading, heading_path, start_line, end_line, content FROM chunks"):
+        c = dict(r)
+        cid = c["id"]
+        rp = c["rel_path"]
+        hkey = (rp, int(c["start_line"]), int(c["end_line"]))
+        c["_hkey"] = hkey
+        c["_lower_hay"] = f"{rp} {c['heading_path']} {c['content']}".lower()
+        c["_folded_hay"] = None
+        chunks[cid] = c
+        doc_to_cids.setdefault(rp, []).append(cid)
+        hkey_to_cids.setdefault(hkey, []).append(cid)
+
+    adj_raw: dict[str, set[str]] = {}
+    for r in conn.execute("SELECT source_path, target_path FROM links"):
+        src, dst = r["source_path"], r["target_path"]
+        adj_raw.setdefault(src, set()).add(dst)
+        adj_raw.setdefault(dst, set()).add(src)
+    adj_links = {k: sorted(v) for k, v in adj_raw.items()}
+
+    return {
+        "doc_meta": doc_meta,
+        "chunks": chunks,
+        "doc_to_cids": doc_to_cids,
+        "hkey_to_cids": hkey_to_cids,
+        "vec_loaded": False,
+        "vec_entries": [],
+        "zero_vec_entries": [],
+        "adj_links": adj_links,
+        "fts_cache": {},
+        "exact_id_cache": {},
+        "vec_rank_cache": OrderedDict(),
+    }
+
+
+def _get_vault_corpus(conn: sqlite3.Connection, vault_dir: Path) -> dict[str, Any]:
+    """Load and cache immutable per-DB-state vault corpus structures for sub-second hybrid retrieval."""
+    token = _db_state_token(conn, vault_dir)
+    if token is None:
+        return _build_vault_corpus(conn)
+
+    with _CACHE_LOCK:
+        cached = _VAULT_CORPUS_CACHE.get(token)
+        if cached is not None:
+            _VAULT_CORPUS_CACHE.move_to_end(token)
+            return cached
+
+    corpus = _build_vault_corpus(conn)
+    main_db_file = token[0]
+    with _CACHE_LOCK:
+        existing = _VAULT_CORPUS_CACHE.get(token)
+        if existing is not None:
+            _VAULT_CORPUS_CACHE.move_to_end(token)
+            return existing
+        for old_tok in [k for k in _VAULT_CORPUS_CACHE if k[0] == main_db_file]:
+            _VAULT_CORPUS_CACHE.pop(old_tok, None)
+        _VAULT_CORPUS_CACHE[token] = corpus
+        while len(_VAULT_CORPUS_CACHE) > _VAULT_CORPUS_CACHE_MAX:
+            _VAULT_CORPUS_CACHE.popitem(last=False)
+    return corpus
+
+
+def _ensure_corpus_vectors(conn: sqlite3.Connection, corpus: dict[str, Any]) -> None:
+    if corpus["vec_loaded"]:
+        return
+    vec_entries, zero_vec_entries = _load_corpus_vectors(conn)
+    with _CACHE_LOCK:
+        if not corpus["vec_loaded"]:
+            corpus["vec_entries"] = vec_entries
+            corpus["zero_vec_entries"] = zero_vec_entries
+            corpus["vec_loaded"] = True
 
 
 def hybrid_retrieve(
@@ -1270,10 +1473,8 @@ def hybrid_retrieve(
         bm25_w = [1.5, 4.0, 1.5, 2.5, 3.0, 1.0, 1.0]
     bm25_args = ", ".join(f"{float(w):.3f}" for w in bm25_w)
 
-    doc_meta = {
-        r["rel_path"]: dict(r)
-        for r in conn.execute("SELECT rel_path, title, doc_type, tier, updated, tags FROM documents")
-    }
+    corpus = _get_vault_corpus(conn, vault_dir)
+    doc_meta = corpus["doc_meta"]
 
     allowed_docs: set[str] | None = None
     if doc_type_filter or tag_filter:
@@ -1286,6 +1487,7 @@ def hybrid_retrieve(
             allowed_docs.add(rp)
         if not allowed_docs:
             return []
+    sorted_allowed_tuple = tuple(sorted(allowed_docs)) if allowed_docs is not None else None
 
     hips_key_ranks: dict[tuple[str, int, int], int] = {}
     hips_key_scores: dict[tuple[str, int, int], float] = {}
@@ -1299,80 +1501,98 @@ def hybrid_retrieve(
     fts_query, exact_identifiers = compile_fts_query(query)
     fts_ranks: dict[int, int] = {}
     if engine != "hips" and fts_query:
-        try:
-            if allowed_docs is not None:
-                sorted_allowed = sorted(allowed_docs)
-                placeholders = ", ".join("?" for _ in sorted_allowed)
-                rows = conn.execute(
-                    f"""
-                    SELECT rowid, bm25(chunks_fts, {bm25_args}) AS score
-                    FROM chunks_fts
-                    WHERE chunks_fts MATCH ? AND rel_path IN ({placeholders})
-                    ORDER BY score
-                    LIMIT 35
-                    """,
-                    (fts_query, *sorted_allowed),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"""
-                    SELECT rowid, bm25(chunks_fts, {bm25_args}) AS score
-                    FROM chunks_fts
-                    WHERE chunks_fts MATCH ?
-                    ORDER BY score
-                    LIMIT 35
-                    """,
-                    (fts_query,),
-                ).fetchall()
-            for rank_counter, r in enumerate(rows, start=1):
-                fts_ranks[r["rowid"]] = rank_counter
-        except sqlite3.OperationalError:
-            pass
+        fts_cache_key = (fts_query, bm25_args, sorted_allowed_tuple)
+        with _CACHE_LOCK:
+            cached_fts = corpus["fts_cache"].get(fts_cache_key)
+        if cached_fts is not None:
+            fts_ranks = dict(cached_fts)
+        else:
+            raw_fts: dict[int, int] = {}
+            try:
+                if sorted_allowed_tuple is not None:
+                    placeholders = ", ".join("?" for _ in sorted_allowed_tuple)
+                    rows = conn.execute(
+                        f"""
+                        SELECT rowid, bm25(chunks_fts, {bm25_args}) AS score
+                        FROM chunks_fts
+                        WHERE chunks_fts MATCH ? AND rel_path IN ({placeholders})
+                        ORDER BY score
+                        LIMIT 35
+                        """,
+                        (fts_query, *sorted_allowed_tuple),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        f"""
+                        SELECT rowid, bm25(chunks_fts, {bm25_args}) AS score
+                        FROM chunks_fts
+                        WHERE chunks_fts MATCH ?
+                        ORDER BY score
+                        LIMIT 35
+                        """,
+                        (fts_query,),
+                    ).fetchall()
+                for rank_counter, r in enumerate(rows, start=1):
+                    raw_fts[r["rowid"]] = rank_counter
+            except sqlite3.OperationalError:
+                pass
+            with _CACHE_LOCK:
+                corpus["fts_cache"][fts_cache_key] = MappingProxyType(raw_fts)
+            fts_ranks = dict(raw_fts)
 
     no_embed = _is_vault_no_embed(vault_dir)
     q_vec = get_embedding(query) if (engine != "hips" and not no_embed) else None
-    vec_ranks: dict[int, int] = {}
-    vec_scores: dict[int, float] = {}
-    all_chunks = conn.execute(
-        "SELECT id, rel_path, heading, heading_path, start_line, end_line, content, embedding FROM chunks"
-    ).fetchall()
-    chunk_map = {c["id"]: dict(c) for c in all_chunks if allowed_docs is None or c["rel_path"] in allowed_docs}
+    all_chunks = corpus["chunks"]
+    doc_to_cids = corpus["doc_to_cids"]
+    if allowed_docs is None:
+        chunk_map = all_chunks
+    else:
+        chunk_map = {cid: all_chunks[cid] for rp in allowed_docs for cid in doc_to_cids.get(rp, ())}
 
     hips_ranks: dict[int, int] = {}
     hips_scores: dict[int, float] = {}
-    for cid, c in chunk_map.items():
-        hkey = (c["rel_path"], int(c["start_line"]), int(c["end_line"]))
-        if hkey in hips_key_ranks:
-            hips_ranks[cid] = hips_key_ranks[hkey]
-            hips_scores[cid] = hips_key_scores[hkey]
+    if hips_key_ranks:
+        hkey_to_cids = corpus["hkey_to_cids"]
+        for hkey, h_rank in hips_key_ranks.items():
+            h_score = hips_key_scores[hkey]
+            for cid in hkey_to_cids.get(hkey, ()):
+                if allowed_docs is None or cid in chunk_map:
+                    hips_ranks[cid] = h_rank
+                    hips_scores[cid] = h_score
 
+    vec_ranks: dict[int, int] | MappingProxyType[Any, Any] = {}
+    vec_scores: dict[int, float] | MappingProxyType[Any, Any] = {}
     if q_vec:
+        _ensure_corpus_vectors(conn, corpus)
         q_norm = math.sqrt(sum(x * x for x in q_vec))
         q_unit = [x / q_norm for x in q_vec] if q_norm > 0.0 else q_vec
-
-        scored = []
-        for cid, c in chunk_map.items():
-            raw_emb = c["embedding"]
-            if raw_emb:
-                if isinstance(raw_emb, (bytes, bytearray)):
-                    c_vec = array.array("f", raw_emb)
-                elif isinstance(raw_emb, str):
-                    try:
-                        c_vec = json.loads(raw_emb)
-                    except Exception:
-                        continue
-                else:
-                    continue
-                c_norm = math.sqrt(sum(x * x for x in c_vec))
-                if c_norm > 0.0:
-                    sim = sum(x * y for x, y in zip(q_unit, c_vec)) / c_norm
-                else:
-                    sim = 0.0
-                vec_scores[cid] = sim
-                scored.append((sim, cid))
-        scored.sort(reverse=True)
-        for rank_idx, (_sim, cid) in enumerate(scored[:30], start=1):
-            vec_ranks[cid] = rank_idx
+        vec_cache_key = (bytes(array.array("d", q_unit)), sorted_allowed_tuple)
+        vec_rank_cache: OrderedDict[Any, Any] = corpus["vec_rank_cache"]
+        with _CACHE_LOCK:
+            cached_vec_res = vec_rank_cache.get(vec_cache_key)
+            if cached_vec_res is not None:
+                vec_rank_cache.move_to_end(vec_cache_key)
+        if cached_vec_res is not None:
+            vec_ranks, vec_scores = cached_vec_res
+        else:
+            scored = [
+                (sum(map(operator.mul, q_unit, c_vec)) / c_norm, cid)
+                for cid, rp, c_vec, c_norm in corpus["vec_entries"]
+                if allowed_docs is None or rp in allowed_docs
+            ]
+            for cid, rp in corpus["zero_vec_entries"]:
+                if allowed_docs is None or rp in allowed_docs:
+                    scored.append((0.0, cid))
+            raw_vec_scores = {cid: sim for sim, cid in scored}
+            scored.sort(reverse=True)
+            raw_vec_ranks = {cid: rank_idx for rank_idx, (_sim, cid) in enumerate(scored[:30], start=1)}
+            ro_res = (MappingProxyType(raw_vec_ranks), MappingProxyType(raw_vec_scores))
+            with _CACHE_LOCK:
+                vec_rank_cache[vec_cache_key] = ro_res
+                vec_rank_cache.move_to_end(vec_cache_key)
+                if len(vec_rank_cache) > _VEC_RANK_CACHE_MAX:
+                    vec_rank_cache.popitem(last=False)
+            vec_ranks, vec_scores = ro_res
 
     rrf_scores: dict[int, float] = {}
     k_rrf = float(active_policy.get("k_rrf", 30.0))
@@ -1387,7 +1607,34 @@ def hybrid_retrieve(
 
     has_hips = len(hips_ranks) > 0
     query_terms = list(dict.fromkeys(fold_accents(t) for t in re.findall(r"\w+", query) if len(t) >= 2))
-    for cid, c in chunk_map.items():
+    exact_id_matches: dict[int, int] | MappingProxyType[Any, Any] = {}
+    if engine != "hips" and exact_identifiers:
+        eid_key = (tuple(exact_identifiers), sorted_allowed_tuple)
+        with _CACHE_LOCK:
+            cached_eid = corpus["exact_id_cache"].get(eid_key)
+        if cached_eid is not None:
+            exact_id_matches = cached_eid
+        else:
+            raw_eid: dict[int, int] = {}
+            for cid, c in chunk_map.items():
+                m_cnt = sum(1 for eid in exact_identifiers if eid in c["_lower_hay"])
+                if m_cnt > 0:
+                    raw_eid[cid] = m_cnt
+            ro_eid = MappingProxyType(raw_eid)
+            with _CACHE_LOCK:
+                corpus["exact_id_cache"][eid_key] = ro_eid
+            exact_id_matches = ro_eid
+
+    if engine == "hips":
+        candidate_iter = ((cid, chunk_map[cid]) for cid in sorted(hips_ranks))
+    else:
+        cand_ids = set(hips_ranks)
+        cand_ids.update(fts_ranks)
+        cand_ids.update(vec_ranks)
+        cand_ids.update(exact_id_matches)
+        candidate_iter = ((cid, chunk_map[cid]) for cid in sorted(cand_ids))
+
+    for cid, c in candidate_iter:
         score = 0.0
         doc_t = str(doc_meta.get(c["rel_path"], {}).get("doc_type", "")).lower()
         is_ep_or_ledger = (
@@ -1408,8 +1655,7 @@ def hybrid_retrieve(
                 score += w_vec / (k_rrf + vec_ranks[cid])
 
         if engine != "hips" and exact_identifiers:
-            haystack = f"{c['rel_path']} {c['heading_path']} {c['content']}".lower()
-            matched_ids = sum(1 for eid in exact_identifiers if eid in haystack)
+            matched_ids = exact_id_matches.get(cid, 0)
             if matched_ids > 0:
                 id_mult = 0.35 if (is_ep_or_ledger and (doc_type_filter or "").lower() != "episodic") else 1.0
                 score += exact_id_boost * matched_ids * id_mult
@@ -1417,7 +1663,10 @@ def hybrid_retrieve(
                     fts_ranks[cid] = 1
 
         if score > 0 and engine != "hips" and len(query_terms) >= 2:
-            folded_hay = fold_accents(f"{c['rel_path']} {c['heading_path']} {c['content']}")
+            folded_hay = c["_folded_hay"]
+            if folded_hay is None:
+                folded_hay = fold_accents(f"{c['rel_path']} {c['heading_path']} {c['content']}")
+                c["_folded_hay"] = folded_hay
             matched_qt = sum(1 for qt in query_terms if qt in folded_hay)
             cov_ratio = matched_qt / len(query_terms)
             if cov_ratio > 0:
@@ -1459,16 +1708,13 @@ def hybrid_retrieve(
                 break
 
     neighbor_docs: dict[str, float] = {}
+    adj_links = corpus["adj_links"]
     for doc_path in top_initial_docs:
         parent_best = max(
-            (rrf_scores[cid] for cid, c in chunk_map.items() if c["rel_path"] == doc_path and cid in rrf_scores),
+            (rrf_scores[cid] for cid in doc_to_cids.get(doc_path, ()) if cid in rrf_scores),
             default=0.0,
         )
-        for r in conn.execute(
-            "SELECT target_path FROM links WHERE source_path = ? UNION SELECT source_path FROM links WHERE target_path = ?",
-            (doc_path, doc_path),
-        ):
-            nb = r[0]
+        for nb in adj_links.get(doc_path, ()):
             if nb in top_initial_docs or doc_meta.get(nb, {}).get("doc_type") in (
                 "moc",
                 "rsi-ledger",
@@ -1480,7 +1726,7 @@ def hybrid_retrieve(
             neighbor_docs[nb] = max(neighbor_docs.get(nb, 0.0), parent_best)
 
     for nb_doc, parent_score in neighbor_docs.items():
-        nb_chunks = [cid for cid, c in chunk_map.items() if c["rel_path"] == nb_doc]
+        nb_chunks = doc_to_cids.get(nb_doc, ())
         if not nb_chunks:
             continue
         any_scored = False
