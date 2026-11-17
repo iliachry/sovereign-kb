@@ -130,7 +130,11 @@ def _extract_followup_and_external_signals(
     }
 
 
-def inspect_session(conv_dir: Path, now: float | None = None) -> dict[str, Any] | None:
+def inspect_session(
+    conv_dir: Path,
+    now: float | None = None,
+    summaries_liveness: dict[str, tuple[str, int, str, str]] | None = None,
+) -> dict[str, Any] | None:
     if now is None:
         now = time.time()
     tpath = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
@@ -297,7 +301,7 @@ def inspect_session(conv_dir: Path, now: float | None = None) -> dict[str, Any] 
     elif (
         last_status == "IN_PROGRESS"
         or (last_type == "PLANNER_RESPONSE" and last_tools)
-        or last_type in ("GENERIC", "SYSTEM_MESSAGE")
+        or last_type in ("GENERIC", "SYSTEM_MESSAGE", "USER_INPUT", "EPHEMERAL_MESSAGE")
     ):
         state = "ACTIVE_TOOL_LOOP" if active_age_s < 180 else "INTERRUPTED_MID_TURN"
         age_s = active_age_s
@@ -305,6 +309,20 @@ def inspect_session(conv_dir: Path, now: float | None = None) -> dict[str, Any] 
         state = "IDLE_COMPLETE"
     else:
         state = "IDLE"
+
+    if state in ("INTERRUPTED_MID_TURN", "IDLE_COMPLETE", "IDLE"):
+        liveness_map = summaries_liveness
+        if liveness_map is None:
+            liveness_map = _query_summaries_liveness(parent_agy / "conversation_summaries.db")
+        if liveness_map:
+            cid = conv_dir.name
+            self_status = (liveness_map.get(cid) or ("", 0, "", ""))[0]
+            child_running = any(
+                c_parent == cid and c_status == "CASCADE_RUN_STATUS_RUNNING"
+                for c_status, _nfi, _title, c_parent in liveness_map.values()
+            )
+            if self_status == "CASCADE_RUN_STATUS_RUNNING" or child_running:
+                state = "ACTIVE_TOOL_LOOP"
 
     signals = _extract_followup_and_external_signals(conv_dir, steps, last_content)
 
@@ -951,7 +969,9 @@ def clean_antigravity_sessions(
             c_db = conv_db_dir / f"{cid}.db"
             c_annot = annot_dir / f"{cid}.pbtxt"
             c_pres = presence_dir / f"{cid}.lock"
-            info = inspect_session(c_brain, now=now) if c_brain.is_dir() else None
+            info = (
+                inspect_session(c_brain, now=now, summaries_liveness=summaries_liveness) if c_brain.is_dir() else None
+            )
 
             sum_status, sum_not_idle, sum_title, sum_parent = summaries_liveness.get(cid, ("", 0, "", ""))
 
@@ -1290,7 +1310,9 @@ def cmd_sessions(args: argparse.Namespace) -> None:
                 print(f"\n  [Remote `{peer_lbl}` Clean]: {rm2}")
         return
 
-    brain_dir = Path.home() / ".gemini" / "antigravity" / "brain"
+    agy_dir = Path.home() / ".gemini" / "antigravity"
+    brain_dir = agy_dir / "brain"
+    summaries_liveness = _query_summaries_liveness(agy_dir / "conversation_summaries.db")
     minutes = int(getattr(args, "minutes", 0))
     cutoff_s = minutes * 60 if minutes > 0 else 0
     now = time.time()
@@ -1303,7 +1325,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
             tpath = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
             if not tpath.exists():
                 continue
-            info = inspect_session(conv_dir, now=now)
+            info = inspect_session(conv_dir, now=now, summaries_liveness=summaries_liveness)
             if not info:
                 continue
             if cutoff_s > 0 and info["last_activity_age_s"] > cutoff_s and info["state"] not in PROTECTED_STATES:
