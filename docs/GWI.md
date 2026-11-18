@@ -91,3 +91,24 @@ skb skills
 skb skills --verify
 skb skills --inject .
 ```
+
+---
+
+## 4. Elenchus Pre-Seal Cross-Lineage Challenge & Human Adjudication (`skb elenchus` / `organon elenchus` — `F-20`)
+
+A deterministic `G >= 9.0` receipt and `.evr` Merkle root prove *what* was executed and sealed, while **Elenchus** ($\text{Ἔλεγχος}$) bridges *Phronesis* and *Pistis* by challenging whether the underlying worktree, tests, and intent are genuinely sound **before** sealing:
+
+1. **Gateway-Unwrapped Independence ($N_{\text{eff}} = \exp(H) \ge 1.80$)**: Gateway and regional routing prefixes (`amazon-bedrock/`, `openrouter/`, `global.`, `us.`) are stripped prior to lineage classification (`anthropic`, `openai`, `qwen`, `google`, `meta`, `deepseek`, `mistral`, `amazon`, `deterministic`). Single-lineage or deterministic offline runs report `DEGRADED_SINGLE_LINEAGE` (`gate_closable = false`) and cannot close `--require-elenchus`.
+2. **Score-Blind Challenge Packet**: `build_elenchus_challenge_packet` strips `goldwood_g`, `compositeScoreG`, tier scores, and `PASS`/`FAIL` verdicts by default so independent models inspect raw code diffs, test receipts, and stated intent without sycophantic anchoring.
+3. **Anchoring vs. Convergence vs. Split Calibration**: Multi-reviewer clusters compute 2/3-gram overlap against non-code prompt text (`anchoring_ratio`), separating `INDEPENDENT_CONVERGENCE` (repo-grounded), `PROMPT_ANCHORED_ECHO` (ungrounded prompt echo $\alpha \ge 0.65$), and `LINEAGE_SPLIT` (cross-model disagreement).
+4. **Law L10 Human Adjudication & `.evr` Dissent Sealing**: Rejecting a finding requires a substantive human rationale ($\ge 12$ chars), bulk `ALL` overrides are blocked when multiple pending clusters exist, and any code or semantic `goldwood.json` drift triggers `STALE_WORKTREE` / `STALE_GWI_RECEIPT`. Passing `--require-elenchus` binds `audit/elenchus_challenge.json` and `tables/elenchus_dissent.csv` (queryable via SQLite `elenchus_dissent`) into `evidence/goldwood.evr`. (`evidence/elenchus_challenge.json` verifies local consistency and repo binding prior to sealing, while cryptographic tamper-evidence — RFC 6962 Merkle root + HMAC signature — attaches once sealed into `evidence/goldwood.evr`.)
+
+```bash
+# Run cross-lineage challenge (auto-uses parallel reviewers, --reviews file, --http-endpoint, or --offline sanity mode)
+skb elenchus run .
+organon elenchus adjudicate . --finding ELC-001 --decision reject --reason "Upstream schema validator enforces non-finite guard before this branch."
+
+# Enforce fresh adjudicated cross-lineage challenge before sealing .evr or finishing
+evr seal-gwi . --require-elenchus
+organon finish . --require-elenchus --seal
+```

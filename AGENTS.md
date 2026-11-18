@@ -32,7 +32,7 @@
 
 ---
 
-## 🗺️ Master Traceability Registry (`F-01`–`F-19`)
+## 🗺️ Master Traceability Registry (`F-01`–`F-20`)
 - `F-01`: Core Architecture & Packaging (`sovereign-kb`, `skb`, `gwi`, `organon`, `evr`)
 - `F-02`: OPSEC & Public Sanitization (`test_zero_private_ip_or_secret_leaks`)
 - `F-03`: Unicode & FTS5 Compiler (`fold_accents`, `compile_fts_query`)
@@ -52,5 +52,6 @@
 - `F-17`: Pistis On-Chain Covenant, Merkle Provenance, Tokenomics & Aristocracy (`organon chain` / `skb chain`)
 - `F-18`: The `.evr` ("Everything" v1.0) Universal Zero-Copy Polyglot File Format (`evr` / `skb evr` / `organon evr`)
 - `F-19`: Frontier Humanity-to-Organon Capabilities (`skb code-graph`, `skb falsify`, `skb splat`, `skb rsi compile-prompts`, `skb rsi sleep-consolidate`)
+- `F-20`: Elenchus Pre-Seal Cross-Lineage Challenge & Human Adjudication Gate (`skb elenchus`, `organon elenchus`, `evr seal-gwi --require-elenchus`)
 
 See [`docs/FEATURE_CATALOG.md`](docs/FEATURE_CATALOG.md) for full file and test mappings.

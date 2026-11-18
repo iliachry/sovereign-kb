@@ -407,7 +407,7 @@ def compute_subproject_fingerprint(
             for p_ev in sorted(ev_root.glob(pat)):
                 if any(part in (".git", "node_modules", ".venv", "target", "dist", "build") for part in p_ev.parts):
                     continue
-                if p_ev.name in ("goldwood.json", "gate_receipt.json") or p_ev in seen_ev:
+                if p_ev.name in ("goldwood.json", "gate_receipt.json", "elenchus_challenge.json") or p_ev in seen_ev:
                     continue
                 if p_ev.is_file():
                     seen_ev.add(p_ev)
@@ -641,7 +641,12 @@ def record_gwi_audit(
 
     base_models = list(models_used or [f"kb-gwi/{GWI_STANDARD_VERSION}"])
     if prev_triad.get("ever_audited") and prev_triad.get("commit_sha") == fp["commit_sha"]:
-        for m_id in (prev_triad.get("fable_model"), prev_triad.get("astra_model")):
+        for m_id in (
+            prev_triad.get("fable_model"),
+            prev_triad.get("astra_model"),
+            prev_triad.get("gx10_model"),
+            *(prev_triad.get("panel_models") or ()),
+        ):
             if m_id and m_id not in base_models:
                 base_models.append(m_id)
 
@@ -696,12 +701,13 @@ def record_triad_audit(
     target_path: Path,
     subpath: str = ".",
     disposition: str = "APPROVED",
-    fable_model: str = "amazon-bedrock/global.anthropic.claude-fable-5-1",
-    astra_model: str = "amazon-bedrock/global.openai.gpt-6-astra",
+    fable_model: str | None = "amazon-bedrock/global.anthropic.claude-fable-5-1",
+    astra_model: str | None = "amazon-bedrock/global.openai.gpt-6-astra",
     gx10_model: str | None = None,
     notes: str = "",
     audited_at: str | None = None,
     commit_sha_override: str | None = None,
+    panel_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Record a Multi-Model Tri-Council (`Fable 5.1` x `GPT-6 Astra`) audit for a project/subproject."""
     resolved = target_path.expanduser().resolve()
@@ -734,6 +740,9 @@ def record_triad_audit(
     )
     proj["repo_root"] = str(repo_root)
 
+    resolved_panel = (
+        list(panel_models) if panel_models is not None else [m for m in (fable_model, astra_model, gx10_model) if m]
+    )
     triad_info = {
         "ever_audited": True,
         "audited_at": now_iso,
@@ -743,6 +752,7 @@ def record_triad_audit(
         "fable_model": fable_model,
         "astra_model": astra_model,
         "gx10_model": gx10_model,
+        "panel_models": resolved_panel,
         "notes": notes,
         "versions": versions,
     }
@@ -768,7 +778,7 @@ def record_triad_audit(
     )
     sp_entry["triad"] = triad_info
     models_list = list(sp_entry.get("models") or [f"kb-gwi/{GWI_STANDARD_VERSION}"])
-    for m in (fable_model, astra_model, gx10_model):
+    for m in (fable_model, astra_model, gx10_model, *(panel_models or ())):
         if m and m not in models_list:
             models_list.append(m)
     sp_entry["models"] = models_list

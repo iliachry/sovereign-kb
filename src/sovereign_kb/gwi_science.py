@@ -380,10 +380,33 @@ def _pytest_collect(root: Path, timeout: int = 180) -> tuple[int | None, str]:
         via = "uv"
     else:
         return None, "pytest unavailable (no .venv, no uv)"
+
+    lock_path = root / "uv.lock"
+    lock_existed = lock_path.exists() or lock_path.is_symlink()
+    orig_lock_bytes: bytes | None = None
+    if lock_existed and lock_path.is_file() and not lock_path.is_symlink():
+        try:
+            orig_lock_bytes = lock_path.read_bytes()
+        except OSError:
+            orig_lock_bytes = None
     try:
         res = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout, env=env, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, f"collection not run ({type(exc).__name__})"
+    finally:
+        # Preserve read-only audited target tree: `uv run` writes `<root>/uv.lock` when absent.
+        if not lock_existed:
+            try:
+                if lock_path.is_file() and not lock_path.is_symlink():
+                    lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif orig_lock_bytes is not None and lock_path.is_file() and not lock_path.is_symlink():
+            try:
+                if lock_path.read_bytes() != orig_lock_bytes:
+                    lock_path.write_bytes(orig_lock_bytes)
+            except OSError:
+                pass
     out = (res.stdout or "") + "\n" + (res.stderr or "")
     if res.returncode == 5 or re.search(r"\bno tests (?:collected|ran)\b", out):
         return 0, f"`pytest --collect-only -q` via {via}: no tests collected (exit {res.returncode})"

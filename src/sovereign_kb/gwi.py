@@ -6494,61 +6494,10 @@ def evaluate_craft_lenses(
 
 
 def _compute_worktree_content_sha(root: Path) -> str:
-    """Compute a content SHA over all git-tracked files plus scripts, source, tests, and manifests."""
-    hasher = hashlib.sha256()
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-    try:
-        ls_proc = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        if ls_proc.returncode == 0:
-            for rel_s in ls_proc.stdout.split("\0"):
-                if not rel_s:
-                    continue
-                p_tr = root / rel_s
-                if (
-                    p_tr.is_file()
-                    and p_tr.name not in ("goldwood.json", "gate_receipt.json", "passport.yaml")
-                    and p_tr not in seen
-                ):
-                    seen.add(p_tr)
-                    candidates.append(p_tr)
-    except Exception:
-        pass
+    """Compute a canonical length-delimited SHA over tracked + untracked worktree files (delegates to Elenchus)."""
+    from .elenchus import _compute_worktree_content_sha as _canonical_worktree_sha
 
-    patterns = (
-        "scripts/**/*",
-        "src/**/*.py",
-        "src/**/*.ts",
-        "src/**/*.tsx",
-        "src/**/*.js",
-        "src/**/*.rs",
-        "tests/**/*",
-        "pyproject.toml",
-        "package.json",
-        "Cargo.toml",
-        "README.md",
-    )
-    for pat in patterns:
-        for p in sorted(root.glob(pat)):
-            if not p.is_file() or p in seen or "__pycache__" in p.parts:
-                continue
-            seen.add(p)
-            candidates.append(p)
-    candidates.sort(key=lambda p: str(p))
-    for p in candidates:
-        try:
-            rel = str(p.relative_to(root))
-            hasher.update(rel.encode("utf-8"))
-            hasher.update(p.read_bytes())
-        except OSError:
-            pass
-    return hasher.hexdigest()[:16]
+    return _canonical_worktree_sha(root)
 
 
 def execute_or_verify_gate_receipt(target_dir: Path, execute_gate: bool = False) -> dict[str, Any]:
@@ -7105,6 +7054,11 @@ def _configure_gwi_parser(parser: argparse.ArgumentParser) -> None:
         default="",
         help="Seal the audit report + visual/media evidence into a tamper-evident `.evr` capsule (`evidence/goldwood.evr`) and anchor into Pistis Chain",
     )
+    parser.add_argument(
+        "--require-elenchus",
+        action="store_true",
+        help="Require a fresh, cross-lineage adjudicated Elenchus challenge receipt before sealing `.evr`",
+    )
     parser.add_argument("--strict", action="store_true", help="Exit with code 1 if G(S) < 9.0 or any blocker is P0")
     parser.add_argument(
         "--strict-lenses",
@@ -7484,11 +7438,20 @@ def cmd_gwi(args: argparse.Namespace) -> None:
     probe_audio = bool(getattr(args, "probe_audio", False))
     req_profile = str(getattr(args, "profile", "auto"))
     incremental = bool(getattr(args, "incremental", False))
+    require_el = bool(getattr(args, "require_elenchus", False))
+    seal_arg = getattr(args, "seal", "") or ""
+    in_gate_exec = os.environ.get("GWI_IN_GATE_EXECUTION") == str(target_path.resolve())
+
+    def _enforce_gwi_elenchus_on_target(target_p: Path, gwi_rep: dict[str, Any] | None) -> dict[str, Any]:
+        from .elenchus import evaluate_elenchus_gate
+
+        return evaluate_elenchus_gate(target_p, gwi_report=gwi_rep, require_independent=True)
 
     if getattr(args, "subprojects", False) and subcmd == "audit":
         subs = discover_subprojects(target_path)
         sub_results: list[dict[str, Any]] = []
         any_fail = False
+        any_elenchus_fail = False
         for sp in subs:
             sp_path = Path(sp["abs_path"])
             fresh_info = evaluate_subproject_freshness(
@@ -7500,15 +7463,19 @@ def cmd_gwi(args: argparse.Namespace) -> None:
                 require_execute_gate=execute_gate if sp["profile"] in ("app", "sim") else False,
             )
             if incremental and fresh_info["is_fresh_pass"]:
-                sub_results.append(
-                    {
-                        "subpath": sp["subpath"],
-                        "name": sp["name"],
-                        "profile": sp["profile"],
-                        "cache_hit": True,
-                        "freshness": fresh_info,
-                    }
-                )
+                sp_entry: dict[str, Any] = {
+                    "subpath": sp["subpath"],
+                    "name": sp["name"],
+                    "profile": sp["profile"],
+                    "cache_hit": True,
+                    "freshness": fresh_info,
+                }
+                if require_el and not in_gate_exec:
+                    el_gate = _enforce_gwi_elenchus_on_target(sp_path, None)
+                    sp_entry["elenchus_gate"] = el_gate
+                    if not el_gate["passed"]:
+                        any_elenchus_fail = True
+                sub_results.append(sp_entry)
                 if not getattr(args, "json", False):
                     v = fresh_info.get("versions") or {}
                     print(
@@ -7516,6 +7483,9 @@ def cmd_gwi(args: argparse.Namespace) -> None:
                         f"(tree={fresh_info['current_tree']}, G={fresh_info['goldwood_g']:.2f} PASS, "
                         f"kb={v.get('kb_version')}/gwi={v.get('gwi_version')}/swm={v.get('swm_version')})"
                     )
+                    if require_el and not in_gate_exec and not sp_entry["elenchus_gate"]["passed"]:
+                        eg = sp_entry["elenchus_gate"]
+                        print(f"  ! [gwi --require-elenchus] BLOCKED ({eg['reason_code']}): {eg['message']}")
                 continue
 
             sp_rep = evaluate_target(
@@ -7530,16 +7500,20 @@ def cmd_gwi(args: argparse.Namespace) -> None:
             aud_rec = record_gwi_audit(sp_path, sp_rep)
             if sp_rep["calculation"]["status"] != "PASS":
                 any_fail = True
-            sub_results.append(
-                {
-                    "subpath": sp["subpath"],
-                    "name": sp["name"],
-                    "profile": sp["profile"],
-                    "cache_hit": False,
-                    "audit_record": aud_rec,
-                    "report": sp_rep,
-                }
-            )
+            sp_entry = {
+                "subpath": sp["subpath"],
+                "name": sp["name"],
+                "profile": sp["profile"],
+                "cache_hit": False,
+                "audit_record": aud_rec,
+                "report": sp_rep,
+            }
+            if require_el and not in_gate_exec:
+                el_gate = _enforce_gwi_elenchus_on_target(sp_path, sp_rep)
+                sp_entry["elenchus_gate"] = el_gate
+                if not el_gate["passed"]:
+                    any_elenchus_fail = True
+            sub_results.append(sp_entry)
             if not getattr(args, "json", False):
                 c = sp_rep["calculation"]
                 print(
@@ -7547,13 +7521,16 @@ def cmd_gwi(args: argparse.Namespace) -> None:
                     f"(tree={aud_rec['tree_sha']}) -> G={c['goldwood_g']:.2f} / 10.00 ({c['status']}, "
                     f"blockers={len(sp_rep.get('blockers') or [])})"
                 )
+                if require_el and not in_gate_exec and not sp_entry["elenchus_gate"]["passed"]:
+                    eg = sp_entry["elenchus_gate"]
+                    print(f"  ! [gwi --require-elenchus] BLOCKED ({eg['reason_code']}): {eg['message']}")
         if getattr(args, "json", False):
             print(json.dumps({"repo_root": str(find_git_root(target_path)), "subprojects": sub_results}, indent=2))
-        if getattr(args, "strict", False) and any_fail:
+        if (getattr(args, "strict", False) and any_fail) or any_elenchus_fail:
             sys.exit(1)
         return
 
-    if incremental and subcmd == "audit":
+    if incremental and subcmd == "audit" and not (seal_arg or getattr(args, "write_evidence", False)):
         root_dir = find_git_root(target_path)
         try:
             rel_sp = str(target_path.relative_to(root_dir)) if target_path != root_dir else "."
@@ -7568,8 +7545,30 @@ def cmd_gwi(args: argparse.Namespace) -> None:
             require_execute_gate=execute_gate,
         )
         if fresh_info["is_fresh_pass"]:
+            el_gate_inc: dict[str, Any] | None = None
+            if require_el and not in_gate_exec:
+                el_gate_inc = _enforce_gwi_elenchus_on_target(target_path, None)
+                if not el_gate_inc["passed"]:
+                    if getattr(args, "json", False):
+                        print(
+                            json.dumps(
+                                {
+                                    "error": el_gate_inc["message"],
+                                    "elenchus_gate": el_gate_inc,
+                                    "cache_hit": True,
+                                    "freshness": fresh_info,
+                                },
+                                indent=2,
+                            )
+                        )
+                    else:
+                        print(f"[gwi --require-elenchus] Error: {el_gate_inc['message']}", file=sys.stderr)
+                    sys.exit(1)
             if getattr(args, "json", False):
-                print(json.dumps({"cache_hit": True, "freshness": fresh_info}, indent=2))
+                payload_inc: dict[str, Any] = {"cache_hit": True, "freshness": fresh_info}
+                if el_gate_inc is not None:
+                    payload_inc["elenchus_gate"] = el_gate_inc
+                print(json.dumps(payload_inc, indent=2))
             else:
                 v = fresh_info.get("versions") or {}
                 print(
@@ -7595,22 +7594,42 @@ def cmd_gwi(args: argparse.Namespace) -> None:
     audit_rec = record_gwi_audit(target_path, report)
     report["audit_provenance"] = audit_rec
 
-    if getattr(args, "write_evidence", False) and os.environ.get("GWI_IN_GATE_EXECUTION") != str(target_path.resolve()):
+    if getattr(args, "write_evidence", False) and not in_gate_exec:
         ev_file = write_goldwood_evidence(target_path, report)
         report["evidence_file"] = str(ev_file)
 
-    seal_arg = getattr(args, "seal", "") or ""
-    if seal_arg and os.environ.get("GWI_IN_GATE_EXECUTION") != str(target_path.resolve()):
+    if seal_arg and not in_gate_exec:
         from .evr import seal_gwi_audit_capsule
 
         seal_out = None if seal_arg == "__DEFAULT__" else seal_arg
-        evr_seal = seal_gwi_audit_capsule(target_path, output_path=seal_out, report=report)
+        try:
+            evr_seal = seal_gwi_audit_capsule(
+                target_path,
+                output_path=seal_out,
+                report=report,
+                require_elenchus=require_el,
+            )
+        except ValueError as exc:
+            if getattr(args, "json", False):
+                print(json.dumps({"error": str(exc), "report": report}, indent=2))
+            else:
+                print(f"[gwi --seal] Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         report["evr_capsule"] = {
             "path": evr_seal["path"],
             "file_size_bytes": evr_seal["file_size_bytes"],
             "merkle_root": evr_seal["merkle_root"],
             "pistis_chain_event": evr_seal.get("pistis_chain_event"),
         }
+    elif require_el and not in_gate_exec:
+        el_gate = _enforce_gwi_elenchus_on_target(target_path, report)
+        report["elenchus_gate"] = el_gate
+        if not el_gate["passed"]:
+            if getattr(args, "json", False):
+                print(json.dumps({"error": el_gate["message"], "elenchus_gate": el_gate, "report": report}, indent=2))
+            else:
+                print(f"[gwi --require-elenchus] Error: {el_gate['message']}", file=sys.stderr)
+            sys.exit(1)
 
     if subcmd == "prompt":
         prompt_text = build_multi_model_prompt(report, agent=getattr(args, "agent", "astra"))

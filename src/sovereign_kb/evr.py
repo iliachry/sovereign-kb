@@ -2720,17 +2720,70 @@ def seal_gwi_audit_capsule(
     sign_key: str = "sovereign-evr-v1-key",
     anchor_pistis: bool = True,
     ledger_file: Path | None = None,
+    require_elenchus: bool = False,
+    elenchus_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Wedge 1: Seal a Goldwood Index (`G >= 9.0`) audit into a tamper-evident `.evr` capsule
     (`evidence/goldwood.evr`) and anchor its RFC 6962 Merkle root into the Pistis Chain (`F-17`).
+    When an Elenchus challenge receipt is present (or `--require-elenchus` is enforced), validates
+    fresh cross-lineage adjudication (`F-20`) and binds `audit/elenchus_challenge.json` +
+    `tables/elenchus_dissent.csv` into the Merkle-verified capsule.
     """
     from .bridge import append_triad_provenance_event
+    from .elenchus import evaluate_elenchus_gate
     from .gwi import evaluate_target
 
     root = Path(target_path).expanduser().resolve()
     target_dir = root if root.is_dir() else root.parent
     gwi_report = report if report is not None else evaluate_target(root, strict_lenses=True)
+
+    def _safe_evr_float(v: Any, default: float = 0.0) -> float:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            try:
+                fval = float(v)
+                return fval if math.isfinite(fval) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+        return default
+
+    resolved_elenchus = elenchus_receipt
+    elenchus_file_exists = False
+    elenchus_load_error = ""
+    if resolved_elenchus is None:
+        elenchus_p = target_dir / "evidence" / "elenchus_challenge.json"
+        if elenchus_p.is_file():
+            elenchus_file_exists = True
+            try:
+                loaded_el = json.loads(elenchus_p.read_text(encoding="utf-8"))
+                if isinstance(loaded_el, dict):
+                    resolved_elenchus = loaded_el
+                else:
+                    elenchus_load_error = "Malformed Elenchus challenge receipt: expected JSON object."
+            except Exception as exc:
+                elenchus_load_error = f"Malformed `evidence/elenchus_challenge.json`: {exc}"
+
+    gate_eval: dict[str, Any] | None = None
+    if isinstance(resolved_elenchus, dict) or elenchus_file_exists or require_elenchus:
+        gate_eval = evaluate_elenchus_gate(
+            target_dir,
+            receipt=resolved_elenchus,
+            gwi_report=gwi_report,
+            require_independent=True,
+        )
+        if require_elenchus and not gate_eval["passed"]:
+            raise ValueError(
+                f"Cannot seal .evr capsule (--require-elenchus) [{gate_eval['reason_code']}]: {gate_eval['message']}"
+            )
+        if elenchus_file_exists and not isinstance(resolved_elenchus, dict):
+            resolved_elenchus = {
+                "schema": "elenchus.challenge.v1",
+                "seal_status": "CORRUPTED",
+                "load_error": elenchus_load_error or str(gate_eval.get("message") or ""),
+                "panel": {"panel_mode": "CORRUPTED", "n_eff": 0.0, "distinct_llm_lineages": []},
+                "clusters": [],
+                "metrics": {"disagreement_index": 0.0},
+            }
 
     if output_path is None:
         ev_dir = target_dir / "evidence"
@@ -2753,6 +2806,99 @@ def seal_gwi_audit_capsule(
     )
 
     builder.add_state("audit/goldwood.json", gwi_report)
+
+    effective_el_seal = "UNKNOWN"
+    gate_passed = False
+    gate_reason = "UNVERIFIED"
+    if isinstance(resolved_elenchus, dict):
+        gate_info = gate_eval or evaluate_elenchus_gate(
+            target_dir,
+            receipt=resolved_elenchus,
+            gwi_report=gwi_report,
+            require_independent=True,
+        )
+        gate_passed = bool(gate_info.get("passed", False))
+        gate_reason = str(gate_info.get("reason_code") or "UNKNOWN")
+        recorded_seal = str(resolved_elenchus.get("seal_status") or "UNKNOWN")
+        effective_el_seal = recorded_seal if gate_passed else str(gate_info.get("seal_status") or "STALE")
+
+        elenchus_to_embed = dict(resolved_elenchus)
+        elenchus_to_embed["gate_verification"] = gate_info
+        if not gate_passed:
+            elenchus_to_embed["recorded_seal_status"] = recorded_seal
+            elenchus_to_embed["seal_status"] = effective_el_seal
+
+        builder.add_state("audit/elenchus_challenge.json", elenchus_to_embed)
+        csv_buf = io.StringIO()
+        writer = csv.writer(csv_buf, lineterminator="\n")
+        writer.writerow(
+            [
+                "cluster_id",
+                "severity",
+                "signal_class",
+                "lineages",
+                "anchoring_ratio",
+                "adjudication",
+                "adjudicator",
+                "reason",
+            ]
+        )
+        raw_clusters = resolved_elenchus.get("clusters")
+        el_clusters = [c for c in raw_clusters if isinstance(c, dict)] if isinstance(raw_clusters, list) else []
+        el_panel_raw = resolved_elenchus.get("panel")
+        el_panel_safe = el_panel_raw if isinstance(el_panel_raw, dict) else {}
+        raw_lineages = el_panel_safe.get("distinct_llm_lineages")
+        panel_lineages = [str(x) for x in raw_lineages] if isinstance(raw_lineages, list) and raw_lineages else ["none"]
+        if el_clusters:
+            for cl_item in el_clusters:
+                adj = cl_item.get("adjudication") if isinstance(cl_item.get("adjudication"), dict) else {}
+                raw_cl_lins = cl_item.get("lineages")
+                cl_lins = [str(x) for x in raw_cl_lins] if isinstance(raw_cl_lins, list) else []
+                writer.writerow(
+                    [
+                        str(cl_item.get("cluster_id", "")),
+                        str(cl_item.get("severity", "")),
+                        str(cl_item.get("signal_class", "")),
+                        "|".join(cl_lins),
+                        f"{_safe_evr_float(cl_item.get('anchoring_ratio'), 0.0):.4f}",
+                        str(adj.get("decision") or adj.get("status") or "PENDING"),
+                        str(adj.get("adjudicator") or ""),
+                        str(adj.get("reason") or ""),
+                    ]
+                )
+        elif not gate_passed:
+            writer.writerow(
+                [
+                    "NONE",
+                    "P1",
+                    "GATE_UNVERIFIED",
+                    "|".join(str(x) for x in panel_lineages),
+                    "0.0000",
+                    effective_el_seal,
+                    "elenchus-gate",
+                    f"{gate_reason}: {gate_info.get('message', '')}",
+                ]
+            )
+        else:
+            writer.writerow(
+                [
+                    "NONE",
+                    "INFO",
+                    "UNANIMOUS_CONVERGENCE",
+                    "|".join(str(x) for x in panel_lineages),
+                    "0.0000",
+                    effective_el_seal,
+                    "panel",
+                    "zero_disputed_findings",
+                ]
+            )
+        builder.add_text("tables/elenchus_dissent.csv", csv_buf.getvalue(), kind=EvrKind.TABLE)
+        builder.add_graph_edge(
+            "audit/elenchus_challenge.json",
+            "audit/goldwood.json",
+            relation="challenges_and_adjudicates",
+            weight=1.0,
+        )
 
     tier_csv_lines = ["tier_id,score,psi"]
     for t_key, psi_val in zip(["S_sub", "S_perc", "S_act", "S_exist"], calc.get("psi_values", [1.0, 1.0, 1.0, 1.0])):
@@ -2810,18 +2956,45 @@ def seal_gwi_audit_capsule(
         summ["verification"] = ver
         summ["goldwood_g"] = calc.get("goldwood_g", 0.0)
         summ["gwi_status"] = calc.get("status", "UNKNOWN")
+        if isinstance(resolved_elenchus, dict):
+            el_panel = resolved_elenchus.get("panel") if isinstance(resolved_elenchus.get("panel"), dict) else {}
+            el_metrics = resolved_elenchus.get("metrics") if isinstance(resolved_elenchus.get("metrics"), dict) else {}
+            el_clusters_list = (
+                resolved_elenchus.get("clusters") if isinstance(resolved_elenchus.get("clusters"), list) else []
+            )
+            gate_n_eff_raw = (gate_eval or {}).get("n_eff") if isinstance(gate_eval, dict) else None
+            resolved_n_eff = _safe_evr_float(gate_n_eff_raw, _safe_evr_float(el_panel.get("n_eff"), 0.0))
+            raw_summ_lins = el_panel.get("distinct_llm_lineages")
+            summ_lins = [str(x) for x in raw_summ_lins] if isinstance(raw_summ_lins, list) else []
+            summ["elenchus"] = {
+                "seal_status": effective_el_seal,
+                "recorded_seal_status": str(resolved_elenchus.get("seal_status") or "UNKNOWN"),
+                "gate_passed": gate_passed,
+                "gate_reason_code": gate_reason,
+                "panel_mode": str(el_panel.get("panel_mode") or "UNKNOWN"),
+                "n_eff": resolved_n_eff,
+                "distinct_llm_lineages": summ_lins,
+                "clusters_count": len(el_clusters_list),
+                "disagreement_index": _safe_evr_float(el_metrics.get("disagreement_index"), 0.0),
+            }
 
     if anchor_pistis:
+        chain_payload: dict[str, Any] = {
+            "project": proj_name,
+            "evr_path": out_evr.name,
+            "evr_merkle_root": summ["merkle_root"],
+            "goldwood_g": calc.get("goldwood_g", 0.0),
+            "status": calc.get("status", "PASS"),
+            "chunk_count": summ["chunk_count"],
+        }
+        if isinstance(resolved_elenchus, dict):
+            chain_payload["elenchus_seal_status"] = effective_el_seal
+            chain_payload["elenchus_gate_passed"] = gate_passed
+            chain_payload["elenchus_reason_code"] = gate_reason
+            chain_payload["elenchus_n_eff"] = summ["elenchus"]["n_eff"]
         chain_rec = append_triad_provenance_event(
             event_type="gwi.evr_sealed",
-            payload={
-                "project": proj_name,
-                "evr_path": out_evr.name,
-                "evr_merkle_root": summ["merkle_root"],
-                "goldwood_g": calc.get("goldwood_g", 0.0),
-                "status": calc.get("status", "PASS"),
-                "chunk_count": summ["chunk_count"],
-            },
+            payload=chain_payload,
             ledger_file=ledger_file,
         )
         seq_num = int(str(chain_rec.get("event_id", "TRIAD-00001")).split("-")[-1])
@@ -3212,6 +3385,11 @@ def register_evr_subparser(subparsers: Any, show_all_aliases: bool = False) -> N
             help="Include __evr__/ internal streams when extracting",
         )
         p.add_argument("--rust", action="store_true", help="Also run native Rust (`rustc`) cross-language verification")
+        p.add_argument(
+            "--require-elenchus",
+            action="store_true",
+            help="Require a fresh, cross-lineage adjudicated Elenchus challenge receipt before sealing `.evr` (`seal-gwi`)",
+        )
         p.add_argument("-k", "--top-k", type=int, default=5, help="Top-K results for `evr search`")
         p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
@@ -3273,13 +3451,33 @@ def cmd_evr(args: argparse.Namespace) -> None:
     if action == "seal-gwi":
         target_p = Path(target or ".").expanduser().resolve()
         out_p = Path(args.output).expanduser().resolve() if args.output else None
-        summ = seal_gwi_audit_capsule(target_p, output_path=out_p, sign_key=sign_key or "sovereign-evr-v1-key")
+        try:
+            summ = seal_gwi_audit_capsule(
+                target_p,
+                output_path=out_p,
+                sign_key=sign_key or "sovereign-evr-v1-key",
+                require_elenchus=bool(getattr(args, "require_elenchus", False)),
+            )
+        except ValueError as exc:
+            if as_json:
+                print(json.dumps({"error": str(exc)}, indent=2))
+            else:
+                print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         if as_json:
             print(json.dumps(summ, indent=2))
         else:
             print(f"=== Sealed GWI Audit Capsule: {summ['path']} ({summ['file_size_bytes']} bytes) ===")
             print(f"  Goldwood Index G(S)  : {summ['goldwood_g']:.2f} / 10.00 ({summ['gwi_status']})")
             print(f"  RFC 6962 Merkle Root : {summ['merkle_root']}")
+            if "elenchus" in summ:
+                el = summ["elenchus"]
+                ver_tag = (
+                    "[VERIFIED]" if el.get("gate_passed") else f"[UNVERIFIED:{el.get('gate_reason_code', 'UNKNOWN')}]"
+                )
+                print(
+                    f"  Elenchus Gate        : {el['seal_status']} {ver_tag} ({el['panel_mode']}, N_eff={el['n_eff']:.2f})"
+                )
             if "pistis_chain_event" in summ:
                 print(
                     f"  Pistis Chain Event   : seq=#{summ['pistis_chain_event']['seq']} ({summ['pistis_chain_event']['event_hash'][:16]}...)"

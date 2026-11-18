@@ -4305,6 +4305,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     )
 
     from sovereign_kb.chain import register_chain_subparser
+    from sovereign_kb.elenchus import register_elenchus_subparser
     from sovereign_kb.evr import register_evr_subparser
     from sovereign_kb.gwi import register_gwi_subparser
     from sovereign_kb.sessions import register_sessions_subparser
@@ -4312,6 +4313,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     from sovereign_kb.video_playback import register_video_subparser
 
     register_gwi_subparser(sub, show_all_aliases=show_all_aliases)
+    register_elenchus_subparser(sub, show_all_aliases=show_all_aliases)
     register_soar_subparser(sub, show_all_aliases=show_all_aliases)
     register_sessions_subparser(sub, show_all_aliases=show_all_aliases)
     register_chain_subparser(sub, show_all_aliases=show_all_aliases)
@@ -4675,14 +4677,32 @@ def cmd_skills(args) -> None:
         print(f"  - {prof:6s} : {', '.join(slist)}")
 
 
+def _normalize_cli_aliases(raw_argv: list[str]) -> list[str]:
+    out = list(raw_argv)
+    idx = 0
+    while idx < len(out):
+        tok = out[idx]
+        if tok == "--vault":
+            idx += 2
+            continue
+        if tok.startswith("-"):
+            idx += 1
+            continue
+        if tok == "challenge":
+            out[idx] = "elenchus"
+        break
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     if "--help-all" in raw_argv:
         parser = build_parser(show_all_aliases=True)
         parser.print_help()
         return
+    norm_argv = _normalize_cli_aliases(raw_argv)
     parser = build_parser(show_all_aliases=False)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(norm_argv)
     if args.cmd == "init":
         cmd_init(args)
     elif args.cmd == "sync":
@@ -4719,6 +4739,10 @@ def main(argv: list[str] | None = None) -> None:
         from sovereign_kb.gwi import cmd_gwi
 
         cmd_gwi(args)
+    elif args.cmd in ("elenchus", "challenge"):
+        from sovereign_kb.elenchus import cmd_elenchus
+
+        cmd_elenchus(args)
     elif args.cmd == "soar":
         from sovereign_kb.soar import cmd_soar
 

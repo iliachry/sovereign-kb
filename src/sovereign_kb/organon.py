@@ -50,7 +50,13 @@ from .chain import (
     collect_pistis_summary,
     register_chain_subparser,
 )
-from .evr import cmd_evr, register_evr_subparser
+from .elenchus import (
+    cmd_elenchus,
+    evaluate_elenchus_gate,
+    register_elenchus_subparser,
+    run_elenchus_challenge,
+)
+from .evr import cmd_evr, register_evr_subparser, seal_gwi_audit_capsule
 from .gwi import GWI_STANDARD_VERSION
 from .sessions import _get_cluster_env
 
@@ -72,6 +78,8 @@ _VAULT_FREE_SKB_CMDS = {
     "gwi",
     "goldwood",
     "audit",
+    "elenchus",
+    "challenge",
     "video",
     "chain",
     "pistis",
@@ -676,17 +684,19 @@ def build_showcase_payload() -> dict[str, Any]:
         },
         {
             "id": "WF-04",
-            "pillar": "Phronesis (`gwi` + `oc triad`)",
-            "title": "4. Run-Bound Quality Gate (`G >= 9.0`) & Parallel Tri-Council Review",
-            "when_to_use": "Verifying any repository, simulation, paper, or video deliverable before shipping.",
+            "pillar": "Phronesis (`gwi` + `elenchus` + `oc triad`)",
+            "title": "4. Run-Bound Quality Gate (`G >= 9.0`), Elenchus Challenge & Tri-Council Review",
+            "when_to_use": "Verifying and adversarially challenging any repository, simulation, paper, or deliverable before sealing `.evr`.",
             "commands": [
                 "organon audit .",
+                "organon elenchus run .",
                 'oc triad "Audit the current repository diff for P0/P1 defects"',
                 "organon gwi status",
             ],
             "what_happens": (
-                "`organon audit` runs `gwi audit --strict --strict-lenses --execute-gate --write-evidence`, binding "
-                "`evidence/gate_receipt.json` to the exact Git tree SHA and feeding any recurring blockers into RSI holdout probes. "
+                "`organon audit` binds `evidence/gate_receipt.json` to the exact Git tree SHA; `organon elenchus run` "
+                "challenges score-blind evidence across uncorrelated model lineages (`N_eff >= 1.80`), flags prompt-anchored "
+                "echoes vs. genuine splits, and requires human adjudication before sealing `.evr`. "
                 "`oc triad` runs Claude Fable 5.1 + GPT-6 Astra in parallel and auto-records the verdict in `~/.swm/audit_registry.json`."
             ),
         },
@@ -887,6 +897,9 @@ def main_cli(argv: list[str] | None = None) -> None:
 
     cmd = args_list[0]
     rest = args_list[1:]
+    if cmd == "challenge":
+        cmd = "elenchus"
+        args_list = ["elenchus", *rest]
 
     # Direct pillar pass-throughs
     if cmd in ("kb", "skb", "episteme", "memory"):
@@ -991,9 +1004,22 @@ def main_cli(argv: list[str] | None = None) -> None:
     p_fin.add_argument("target", nargs="?", default=".", help="Target repository path (default: .)")
     p_fin.add_argument("-m", "--message", help="Episodic commit message for atomic `kb push -m ...`")
     p_fin.add_argument("--skip-push", action="store_true", help="Do not run `kb push` even if -m is provided")
+    p_fin.add_argument(
+        "--require-elenchus",
+        "--challenge",
+        dest="require_elenchus",
+        action="store_true",
+        help="Require (and run if missing) cross-lineage Elenchus challenge & human adjudication before anchoring/sealing",
+    )
+    p_fin.add_argument(
+        "--seal",
+        action="store_true",
+        help="Also seal `evidence/goldwood.evr` capsule during Step 4",
+    )
 
     register_chain_subparser(sub, show_all_aliases=True)
     register_evr_subparser(sub, show_all_aliases=True)
+    register_elenchus_subparser(sub, show_all_aliases=True)
 
     parsed = parser.parse_args(args_list)
 
@@ -1003,6 +1029,10 @@ def main_cli(argv: list[str] | None = None) -> None:
 
     if parsed.subcmd in ("evr", "everything"):
         cmd_evr(parsed)
+        return
+
+    if parsed.subcmd in ("elenchus", "challenge"):
+        cmd_elenchus(parsed)
         return
 
     if parsed.subcmd == "status":
@@ -1151,6 +1181,38 @@ def main_cli(argv: list[str] | None = None) -> None:
 
         gwi_main(["audit", str(target_dir), "--strict", "--strict-lenses", "--execute-gate", "--write-evidence"])
 
+        if getattr(parsed, "require_elenchus", False):
+            print(f"\n=== [2.5/5] Verifying Pre-Seal Elenchus Cross-Lineage Gate on `{target_dir.name}` ===")
+            el_gate = evaluate_elenchus_gate(target_dir, require_independent=True)
+            reason_code = el_gate.get("reason_code")
+            has_adjudications = False
+            el_receipt_p = target_dir / "evidence" / "elenchus_challenge.json"
+            if el_receipt_p.is_file():
+                try:
+                    raw_el = json.loads(el_receipt_p.read_text(encoding="utf-8"))
+                    has_adjudications = any(
+                        isinstance(c, dict) and str((c.get("adjudication") or {}).get("status") or "") == "ADJUDICATED"
+                        for c in (raw_el.get("clusters") or [])
+                    )
+                except Exception:
+                    has_adjudications = True
+            if reason_code == "MISSING_ELENCHUS_RECEIPT" or (
+                reason_code in ("STALE_GATE_RECEIPT", "STALE_GWI_RECEIPT", "STALE_WORKTREE") and not has_adjudications
+            ):
+                run_elenchus_challenge(target_dir, runner="auto")
+                el_gate = evaluate_elenchus_gate(target_dir, require_independent=True)
+            if not el_gate.get("passed"):
+                pending_str = ", ".join(el_gate.get("pending_ids") or [])
+                print(f"[organon finish] Elenchus Gate BLOCKED: {el_gate['message']}", file=sys.stderr)
+                if pending_str:
+                    print(
+                        f"  Remediate or adjudicate explicitly: skb elenchus adjudicate {target_dir} "
+                        f'--finding <{pending_str}> --decision reject|accept --reason "<rationale>"',
+                        file=sys.stderr,
+                    )
+                sys.exit(1)
+            print(f"  {el_gate['message']}")
+
         print("\n=== [3/5] Running 6-Gate Sovereign KB Doctor (`skb verify`) ===")
         active_vault, vault_source = resolve_organon_vault_state()
         if vault_source == "unconfigured":
@@ -1176,6 +1238,16 @@ def main_cli(argv: list[str] | None = None) -> None:
             f"  Anchored {anchor_rec['anchor_id']}: root={anchor_rec['rfc6962_merkle_root'][:22]}... "
             f"(leaves={anchor_rec['merkle_leaves_count']}, proof_verified={anchor_rec['inclusion_proof_verified']})"
         )
+        if getattr(parsed, "seal", False):
+            try:
+                evr_seal = seal_gwi_audit_capsule(
+                    target_dir,
+                    require_elenchus=bool(getattr(parsed, "require_elenchus", False)),
+                )
+                print(f"  Sealed .evr Capsule: {evr_seal['path']} (merkle={evr_seal['merkle_root'][:22]}...)")
+            except ValueError as exc:
+                print(f"[organon finish] ERROR sealing .evr capsule: {exc}", file=sys.stderr)
+                sys.exit(1)
 
         print("\n=== [5/5] Synchronizing Organon Registry with Remote Peer ===")
         configured_peer = (_get_cluster_env("KB_REMOTE_PEER") or "").strip()
