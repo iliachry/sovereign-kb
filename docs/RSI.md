@@ -18,16 +18,21 @@ skb evolve
 skb rsi status
 skb rsi ledger
 
-# Run Loop 1 only: Coordinate-search meta-optimization of RRF & BM25 weights
+# Run Loop 1 only: Adaptive coordinate-search meta-optimization of RRF & BM25 weights
 skb tune
 
 # Run Loop 2 only: Self-heal frontmatter/orphans & consolidate 04-episodic/*.md -> 02-operating-system/
 skb consolidate
+
+# Record a real query-outcome feedback probe into .kb/query_feedback_probes.json (held-out split)
+skb rsi feedback --query "drift plus penalty" --target "02-operating-system/heuristics-and-mental-models.md"
 ```
 
 1. **Loop 1 — Retrieval Policy Meta-Optimization (`.kb/retrieval_policy.json`)**:
-   - Evaluates a composite objective $J(\theta, K) = 0.45\,\text{MRR@5} + 0.30\,\text{NDCG@5} + 0.15\,\text{Recall@1} + 0.10\,\text{MeanMargin}$ across canonical multi-domain probes and held-out structural probes from the vault.
-   - Optimizes `k_rrf`, `w_hips`, `w_fts`, `w_vec`, `exact_id_boost`, `graph_1hop_boost`, and column `bm25_weights`, persisting updates only when $J(\theta', K) \ge J(\theta_t, K)$ on both train and held-out splits.
+   - Evaluates a composite objective $J(\theta, K) = 0.45\,\text{MRR@5} + 0.30\,\text{NDCG@5} + 0.15\,\text{Recall@1} + 0.10\,\text{MeanMargin}$ across canonical multi-domain probes, content-term probes, paraphrased held-out probes, negative-control probes (`CANONICAL_NEGATIVE_PROBES`), and real feedback probes (`.kb/query_feedback_probes.json`, `.kb/gwi_outcome_probes.json`, `.kb/swm_rsi_probes.json`).
+   - Runs **adaptive multi-round coordinate search with step halving** over all 8 continuous retrieval parameters (`k_rrf`, `exact_id_boost`, `w_hips`, `w_fts_with_hips`, `w_vec`, `graph_1hop_boost`, `graph_neighbor_lead_factor`, `episodic_dampening`) plus discrete `bm25_weights` presets, persisting updates only when $J(\theta', K) \ge J(\theta_t, K)$ on both train and held-out splits.
+   - Tracks the **Constrained Lyapunov Drift-Plus-Penalty Potential**:
+     $$V_t = (1 - J) + \lambda_{\text{lat}} Q_{\text{latency}} + \lambda_{\text{stale}} Q_{\text{staleness}} + \lambda_{\text{bloat}} Q_{\text{bloat}}$$
 2. **Loop 2 — Self-Healing & Episodic-to-Semantic Consolidation (`skb consolidate` / `skb verify --heal`)**:
    - Automatically repairs missing YAML frontmatter (Gate 1) and wires unlinked orphan notes into `INDEX.md` (Gate 3).
    - Distills timestamped entries from `04-episodic/*.md` into `02-operating-system/autonomous-rsi-distillations.md` (with atomic rollback if any of the 6 Vault Gates fail).

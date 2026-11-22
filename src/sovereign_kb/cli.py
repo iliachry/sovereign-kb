@@ -1790,6 +1790,32 @@ def cmd_search(args) -> None:
         engine=engine,
     )
     conn.close()
+    from sovereign_kb.audit_registry import is_bundled_starter_vault_path
+
+    if (vault_dir / ".kb").is_dir() and not is_bundled_starter_vault_path(vault_dir) and len(query.strip()) >= 6:
+        try:
+            low_margin = False
+            margin_val: float | None = None
+            if len(results) >= 2:
+                s1 = float(results[0].get("rrf_score", 0.0))
+                s2 = float(results[1].get("rrf_score", 0.0))
+                if s1 > 0:
+                    margin_val = (s1 - s2) / s1
+                    low_margin = margin_val < 0.05
+            if not results or low_margin:
+                tel_path = vault_dir / ".kb" / "query_telemetry.jsonl"
+                tel_rec = {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "query": query.strip(),
+                    "engine": engine,
+                    "hits": len(results),
+                    "top1_path": results[0].get("rel_path") if results else None,
+                    "margin": round(margin_val, 6) if margin_val is not None else None,
+                }
+                with tel_path.open("a", encoding="utf-8") as tf:
+                    tf.write(json.dumps(tel_rec, sort_keys=True) + "\n")
+        except Exception:
+            pass
     if getattr(args, "json", False):
         print(
             json.dumps(
@@ -3379,10 +3405,14 @@ def cmd_rsi(args) -> None:
     Monotonically-Gated Recursive Self-Improvement Engine (`sovereign-kb rsi` / `evolve` / `tune` / `consolidate`).
     """
     from sovereign_kb.rsi import (
+        CANONICAL_NEGATIVE_PROBES,
+        compute_lyapunov_potential,
+        compute_vault_health_queues,
         evaluate_retrieval_benchmark,
         heal_and_consolidate_vault,
         load_retrieval_policy,
         read_rsi_ledger,
+        record_query_feedback,
         run_rsi_cycle,
         tune_retrieval_policy,
         verify_ledger_chain,
@@ -3407,12 +3437,21 @@ def cmd_rsi(args) -> None:
         policy = load_retrieval_policy(vault_dir)
         all_probes = build_benchmark_suite(conn, vault_dir)
         _, heldout_probes = split_benchmark_suite(conn, vault_dir, probes=all_probes)
-        bench = evaluate_retrieval_benchmark(conn, vault_dir, hybrid_retrieve, policy=policy, probes=all_probes)
+        bench = evaluate_retrieval_benchmark(
+            conn,
+            vault_dir,
+            hybrid_retrieve,
+            policy=policy,
+            probes=all_probes,
+            negative_probes=CANONICAL_NEGATIVE_PROBES,
+        )
         heldout_bench = (
             evaluate_retrieval_benchmark(conn, vault_dir, hybrid_retrieve, policy=policy, probes=heldout_probes)
             if heldout_probes
             else bench
         )
+        queues = compute_vault_health_queues(conn, vault_dir, latency_p95_ms=bench.get("latency_p95_ms", 0.0))
+        lyap = compute_lyapunov_potential(bench["objective_j"], queues)
         conn.close()
         entries = read_rsi_ledger(vault_dir)
         chain_ok, count = verify_ledger_chain(vault_dir)
@@ -3420,6 +3459,12 @@ def cmd_rsi(args) -> None:
             "vault_dir": str(vault_dir),
             "objective_j": bench["objective_j"],
             "heldout_objective_j": heldout_bench["objective_j"],
+            "lyapunov_v": lyap["lyapunov_v"],
+            "lyapunov_v_det": lyap["lyapunov_v_det"],
+            "vault_queues": queues,
+            "latency_p95_ms": bench.get("latency_p95_ms", 0.0),
+            "negative_rejection_rate": bench.get("negative_rejection_rate", 1.0),
+            "negative_fp_count": bench.get("negative_fp_count", 0),
             "mrr_at_5": bench["mrr_at_5"],
             "ndcg_at_5": bench["ndcg_at_5"],
             "recall_at_1": bench["recall_at_1"],
@@ -3442,8 +3487,14 @@ def cmd_rsi(args) -> None:
                 f"Held-Out J: {heldout_bench['objective_j']:.6f} ({heldout_bench['probes_count']} probes)"
             )
             print(
+                f"  Lyapunov Pot V    : {lyap['lyapunov_v']:.6f} (det={lyap['lyapunov_v_det']:.6f}) | "
+                f"p95={bench.get('latency_p95_ms', 0.0):.2f}ms, "
+                f"q_stale={queues['q_staleness']:.3f}, q_bloat={queues['q_bloat']:.3f}"
+            )
+            print(
                 f"  Retrieval Metrics : MRR@5={bench['mrr_at_5']:.4f}, "
                 f"NDCG@5={bench['ndcg_at_5']:.4f}, Recall@1={bench['recall_at_1']:.4f}, "
+                f"NegReject={bench.get('negative_rejection_rate', 1.0):.2%}, "
                 f"LedgerIntrusions={bench.get('ledger_intrusions', 0)}"
             )
             print(
@@ -3515,6 +3566,24 @@ def cmd_rsi(args) -> None:
             print(f"  Healed Orphan Notes   : {len(res['healed_orphans'])} file(s)")
         return
 
+    if action == "feedback":
+        q_arg = getattr(args, "query", None) or ""
+        t_arg = getattr(args, "target", None) or ""
+        h_arg = getattr(args, "heading", None) or ""
+        o_arg = getattr(args, "outcome", "miss") or "miss"
+        fb = record_query_feedback(vault_dir, query=q_arg, target_path=t_arg, target_heading=h_arg, outcome=o_arg)
+        if getattr(args, "json", False):
+            print(json.dumps(fb, indent=2))
+        else:
+            if fb.get("recorded"):
+                print(
+                    f"Recorded query feedback probe {fb['probe']['id']}: "
+                    f"'{fb['probe']['query']}' -> {fb['probe']['target_path']} (total={fb['total_probes']})"
+                )
+            else:
+                print(f"Query feedback not recorded: {fb.get('reason', 'invalid')}")
+        return
+
     if action == "compile-prompts":
         from sovereign_kb.frontier_organon import compile_organon_prompts
 
@@ -3571,6 +3640,13 @@ def cmd_rsi(args) -> None:
             f"  Lyapunov Objective J : {report['before']['objective_j']:.6f} -> {report['after']['objective_j']:.6f} "
             f"(delta={report['delta_j']:+.6f}, monotonic={report['lyapunov_monotonic']})"
         )
+        if "lyapunov_v_after" in report:
+            vq = report.get("vault_queues", {})
+            print(
+                f"  Lyapunov Potential V : {report['lyapunov_v_before']:.6f} -> {report['lyapunov_v_after']:.6f} "
+                f"(delta_v={report.get('delta_v', 0.0):+.6f}, q_stale={vq.get('q_staleness', 0.0):.3f}, "
+                f"q_bloat={vq.get('q_bloat', 0.0):.3f}, p95={report['after'].get('latency_p95_ms', 0.0):.2f}ms)"
+            )
         print(
             f"  Retrieval MRR@5      : {report['before']['mrr_at_5']:.4f} -> {report['after']['mrr_at_5']:.4f} "
             f"({report['after']['probes_count']} benchmark probes)"
@@ -4177,11 +4253,21 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
                     "consolidate",
                     "status",
                     "ledger",
+                    "feedback",
                     "compile-prompts",
                     "sleep-consolidate",
                 ),
                 default="cycle",
                 help="RSI subcommand (default: cycle)",
+            )
+            p_rsi.add_argument("--query", help="Query string for `rsi feedback`")
+            p_rsi.add_argument("--target", help="Expected target rel_path for `rsi feedback`")
+            p_rsi.add_argument("--heading", default="", help="Optional expected heading for `rsi feedback`")
+            p_rsi.add_argument(
+                "--outcome",
+                choices=("miss", "success"),
+                default="miss",
+                help="Outcome label for `rsi feedback` (default: miss)",
             )
         p_rsi.add_argument("--json", action="store_true", help="Output machine-readable JSON telemetry")
         p_rsi.add_argument("--use-llm", action="store_true", help="Synthesize episodic distillations via local LLM")

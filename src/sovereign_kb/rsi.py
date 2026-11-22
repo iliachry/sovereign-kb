@@ -25,6 +25,7 @@ import json
 import math
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -124,7 +125,63 @@ CANONICAL_HELDOUT_PROBES: list[dict[str, str]] = [
         "target_heading": "",
         "split": "heldout",
     },
+    {
+        "id": "HELDOUT-GWI-01",
+        "query": "multiplicative craft lens penalty veto threshold sovereign quality score",
+        "target_path": "02-operating-system/goldwood-index-gwi-standard.md",
+        "target_heading": "",
+        "split": "heldout",
+    },
+    {
+        "id": "HELDOUT-DESIGN-01",
+        "query": "single row top bar chrome budget simultaneous cognitive load controls",
+        "target_path": "02-operating-system/subtractive-design-laws.md",
+        "target_heading": "",
+        "split": "heldout",
+    },
+    {
+        "id": "HELDOUT-SOAR-01",
+        "query": "explanation based chunking impasse substate preference cascade working memory",
+        "target_path": "02-operating-system/soar-cognitive-architecture.md",
+        "target_heading": "",
+        "split": "heldout",
+    },
+    {
+        "id": "HELDOUT-RUST-02",
+        "query": "lock free memory ordering acquire release atomic synchronization",
+        "target_path": "02-operating-system/rust-systems-reference.md",
+        "target_heading": "RUST-CERT-14",
+        "split": "heldout",
+    },
 ]
+
+CANONICAL_NEGATIVE_PROBES: list[dict[str, Any]] = [
+    {
+        "id": "NEG-01",
+        "query": "xylophone submarine recipes sourdough fermentation starter",
+        "target_path": "",
+        "target_heading": "",
+        "negative": True,
+    },
+    {
+        "id": "NEG-02",
+        "query": "medieval tapestry weaving loom shuttle tension calibration",
+        "target_path": "",
+        "target_heading": "",
+        "negative": True,
+    },
+    {
+        "id": "NEG-03",
+        "query": "antarctic penguin migration rookery telemetry satellite",
+        "target_path": "",
+        "target_heading": "",
+        "negative": True,
+    },
+]
+
+LAMBDA_LATENCY = 0.05
+LAMBDA_STALENESS = 0.05
+LAMBDA_BLOAT = 0.05
 
 
 def compute_policy_sha256(policy: dict[str, Any]) -> str:
@@ -139,6 +196,82 @@ def policy_path(vault_dir: Path) -> Path:
 
 def ledger_path(vault_dir: Path) -> Path:
     return vault_dir / ".kb" / "rsi-ledger.jsonl"
+
+
+def query_feedback_probes_path(vault_dir: Path) -> Path:
+    return vault_dir / ".kb" / "query_feedback_probes.json"
+
+
+def load_query_feedback_probes(vault_dir: Path) -> list[dict[str, str]]:
+    """Load persisted query-outcome feedback probes from `.kb/query_feedback_probes.json`."""
+    p = query_feedback_probes_path(vault_dir)
+    if not p.is_file():
+        return []
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            return []
+        out: list[dict[str, str]] = []
+        for item in raw:
+            if isinstance(item, dict) and item.get("query") and item.get("target_path"):
+                out.append(
+                    {
+                        "id": str(item.get("id", "QFB-01")),
+                        "query": str(item["query"]),
+                        "target_path": str(item["target_path"]),
+                        "target_heading": str(item.get("target_heading", "")),
+                        "split": "heldout",
+                    }
+                )
+        return out[-32:]
+    except Exception:
+        return []
+
+
+def record_query_feedback(
+    vault_dir: Path,
+    query: str,
+    target_path: str,
+    target_heading: str = "",
+    outcome: str = "miss",
+    score_margin: float | None = None,
+) -> dict[str, Any]:
+    """Record a real query-outcome feedback probe into `.kb/query_feedback_probes.json` (deduped, capped at 32)."""
+    vdir = Path(vault_dir).expanduser().resolve()
+    q_clean = " ".join(query.strip().split())
+    t_clean = target_path.strip()
+    if not q_clean or not t_clean:
+        return {"recorded": False, "reason": "empty_query_or_target"}
+
+    p = query_feedback_probes_path(vdir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    existing: list[dict[str, Any]] = []
+    if p.is_file():
+        try:
+            loaded = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                existing = [x for x in loaded if isinstance(x, dict)]
+        except Exception:
+            existing = []
+
+    norm_q = q_clean.lower()
+    existing = [x for x in existing if str(x.get("query", "")).strip().lower() != norm_q]
+    probe_id = f"QFB-{hashlib.sha256(norm_q.encode('utf-8')).hexdigest()[:8].upper()}"
+    entry: dict[str, Any] = {
+        "id": probe_id,
+        "query": q_clean,
+        "target_path": t_clean,
+        "target_heading": target_heading.strip(),
+        "outcome": outcome,
+        "split": "heldout",
+        "recorded_at": datetime.datetime.now().isoformat(),
+    }
+    if score_margin is not None:
+        entry["score_margin"] = round(float(score_margin), 6)
+    existing.append(entry)
+    capped = existing[-32:]
+    p.write_text(json.dumps(capped, indent=2) + "\n", encoding="utf-8")
+    return {"recorded": True, "probe": entry, "total_probes": len(capped), "path": str(p)}
 
 
 def load_retrieval_policy(vault_dir: Path) -> dict[str, Any]:
@@ -164,10 +297,53 @@ def save_retrieval_policy(vault_dir: Path, policy: dict[str, Any]) -> Path:
     return p
 
 
+_PROBE_STOPWORDS = frozenset(
+    {
+        "this",
+        "that",
+        "with",
+        "from",
+        "into",
+        "have",
+        "will",
+        "your",
+        "their",
+        "there",
+        "these",
+        "those",
+        "which",
+        "where",
+        "when",
+        "what",
+        "about",
+        "should",
+        "could",
+        "would",
+        "must",
+        "only",
+        "also",
+        "more",
+        "than",
+        "then",
+        "each",
+        "such",
+        "using",
+        "used",
+        "when",
+        "true",
+        "false",
+        "none",
+        "note",
+        "file",
+        "section",
+    }
+)
+
+
 def build_benchmark_suite(conn: sqlite3.Connection, vault_dir: Path) -> list[dict[str, str]]:
     """
     Construct a deterministic retrieval benchmark combining canonical domain probes
-    and auto-extracted structural heading probes from non-MOC documents in the vault.
+    and auto-extracted structural heading + content-term probes from non-MOC documents in the vault.
     """
     existing_docs = {
         r["rel_path"]: r["doc_type"] for r in conn.execute("SELECT rel_path, doc_type FROM documents").fetchall()
@@ -179,7 +355,7 @@ def build_benchmark_suite(conn: sqlite3.Connection, vault_dir: Path) -> list[dic
 
     rows = conn.execute(
         """
-        SELECT c.rel_path, c.heading, c.heading_path, d.title, d.doc_type, d.tags
+        SELECT c.rel_path, c.heading, c.heading_path, c.content, d.title, d.doc_type, d.tags
         FROM chunks c
         JOIN documents d ON d.rel_path = c.rel_path
         WHERE d.doc_type NOT IN ('moc', 'rsi-ledger', 'distillation-ledger', 'episodic')
@@ -199,12 +375,33 @@ def build_benchmark_suite(conn: sqlite3.Connection, vault_dir: Path) -> list[dic
         words = [w for w in clean_h.split() if len(w) >= 3]
         if len(words) < 2:
             continue
-        tag_tok = ""
-        if r["tags"]:
-            first_tag = r["tags"].split(",")[0].strip()
-            if first_tag and first_tag.lower() not in clean_h.lower():
-                tag_tok = f" {first_tag}"
-        q_str = f"{' '.join(words[:6])}{tag_tok}".strip()
+
+        q_str = ""
+        if auto_idx % 2 == 0:
+            body_txt = r["content"] if "content" in r.keys() else ""
+            if body_txt:
+                h_lower = {w.lower() for w in words}
+                body_tokens: list[str] = []
+                seen_tok: set[str] = set()
+                for tok in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", body_txt):
+                    tl = tok.lower()
+                    if tl in h_lower or tl in _PROBE_STOPWORDS or tl in seen_tok:
+                        continue
+                    seen_tok.add(tl)
+                    body_tokens.append(tok)
+                    if len(body_tokens) >= 5:
+                        break
+                if len(body_tokens) >= 4:
+                    q_str = " ".join(body_tokens)
+
+        if not q_str:
+            tag_tok = ""
+            if r["tags"]:
+                first_tag = r["tags"].split(",")[0].strip()
+                if first_tag and first_tag.lower() not in clean_h.lower():
+                    tag_tok = f" {first_tag}"
+            q_str = f"{' '.join(words[:6])}{tag_tok}".strip()
+
         if q_str.lower() in seen_queries:
             continue
         seen_queries.add(q_str.lower())
@@ -278,6 +475,14 @@ def split_benchmark_suite(
     except Exception:
         pass
 
+    try:
+        for fp in load_query_feedback_probes(vault_dir):
+            if fp.get("target_path") in existing_docs and fp["query"].lower() not in seen_q:
+                heldout_probes.append(dict(fp))
+                seen_q.add(fp["query"].lower())
+    except Exception:
+        pass
+
     for idx, p in enumerate(all_probes):
         if p["query"].lower() in seen_q:
             continue
@@ -300,10 +505,12 @@ def evaluate_retrieval_benchmark(
     policy: dict[str, Any] | None = None,
     probes: list[dict[str, str]] | None = None,
     strict_empty: bool = False,
+    negative_probes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Evaluate retrieval policy `policy` over `probes` and compute:
-      - MRR@5, NDCG@5, Recall@1, Recall@5, MeanMargin
+      - MRR@5, NDCG@5, Recall@1, Recall@5, MeanMargin, latency_p95_ms
+      - Optional negative-control rejection (`negative_rejection_rate`, `negative_fp_count`)
       - Composite Lyapunov objective J(theta, K) in [0, 1]
     """
     active_policy = policy or load_retrieval_policy(vault_dir)
@@ -321,6 +528,9 @@ def evaluate_retrieval_benchmark(
             "mean_margin": 0.0,
             "objective_j": empty_val,
             "ledger_intrusions": 0,
+            "latency_p95_ms": 0.0,
+            "negative_rejection_rate": 1.0,
+            "negative_fp_count": 0,
             "misses": [],
         }
 
@@ -332,8 +542,10 @@ def evaluate_retrieval_benchmark(
     ledger_intrusions = 0
     distill_rel = "02-operating-system/autonomous-rsi-distillations.md"
     misses: list[dict[str, Any]] = []
+    latencies_ms: list[float] = []
 
     for probe in probes:
+        t0 = time.perf_counter()
         results = invoke_hybrid_retrieve(
             hybrid_retrieve_fn,
             conn,
@@ -343,6 +555,7 @@ def evaluate_retrieval_benchmark(
             engine="auto",
             policy=active_policy,
         )
+        latencies_ms.append((time.perf_counter() - t0) * 1000.0)
         target_path = probe["target_path"]
         target_heading = probe.get("target_heading", "").lower()
 
@@ -402,6 +615,28 @@ def evaluate_retrieval_benchmark(
     mean_margin = margin_sum / n
     objective_j = 0.45 * mrr + 0.30 * ndcg + 0.15 * rec1 + 0.10 * mean_margin
 
+    latencies_ms.sort()
+    p95_idx = min(len(latencies_ms) - 1, int(0.95 * len(latencies_ms))) if latencies_ms else 0
+    latency_p95_ms = round(latencies_ms[p95_idx], 3) if latencies_ms else 0.0
+
+    neg_fp_count = 0
+    neg_total = 0
+    if negative_probes:
+        for np_item in negative_probes:
+            neg_total += 1
+            neg_res = invoke_hybrid_retrieve(
+                hybrid_retrieve_fn,
+                conn,
+                vault_dir,
+                np_item["query"],
+                top_k=1,
+                engine="auto",
+                policy=active_policy,
+            )
+            if neg_res and float(neg_res[0].get("rrf_score", 0.0)) >= 0.045:
+                neg_fp_count += 1
+    neg_rejection_rate = round((neg_total - neg_fp_count) / neg_total, 5) if neg_total > 0 else 1.0
+
     return {
         "probes_count": n,
         "insufficient_evidence": False,
@@ -412,7 +647,94 @@ def evaluate_retrieval_benchmark(
         "mean_margin": round(mean_margin, 5),
         "objective_j": round(objective_j, 6),
         "ledger_intrusions": ledger_intrusions,
+        "latency_p95_ms": latency_p95_ms,
+        "negative_rejection_rate": neg_rejection_rate,
+        "negative_fp_count": neg_fp_count,
         "misses": misses,
+    }
+
+
+def compute_vault_health_queues(
+    conn: sqlite3.Connection,
+    vault_dir: Path,
+    latency_p95_ms: float = 0.0,
+) -> dict[str, float]:
+    """
+    Compute normalized virtual health queues in [0, 1] for Constrained Lyapunov Drift-Plus-Penalty:
+      - q_latency: p95 retrieval latency normalized against 250ms budget
+      - q_staleness: fraction of non-episodic, non-MOC docs updated > 180 days ago
+      - q_bloat: average of orphan note ratio and distillation ledger excess ratio
+    """
+    q_latency = round(min(1.0, max(0.0, float(latency_p95_ms)) / 250.0), 6)
+
+    q_staleness = 0.0
+    total_docs = 0
+    try:
+        rows = conn.execute(
+            "SELECT rel_path, doc_type, updated FROM documents WHERE doc_type NOT IN ('episodic', 'moc', 'rsi-ledger')"
+        ).fetchall()
+        total_docs = len(rows)
+        if total_docs > 0:
+            cutoff = datetime.date.today() - datetime.timedelta(days=180)
+            stale_count = 0
+            for r in rows:
+                upd_raw = str(r["updated"] or "").strip()[:10]
+                try:
+                    upd_dt = datetime.date.fromisoformat(upd_raw)
+                    if upd_dt < cutoff:
+                        stale_count += 1
+                except ValueError:
+                    stale_count += 1
+            q_staleness = round(min(1.0, stale_count / total_docs), 6)
+    except sqlite3.OperationalError:
+        q_staleness = 0.0
+
+    orphan_ratio = 0.0
+    try:
+        non_moc = conn.execute(
+            "SELECT rel_path FROM documents WHERE rel_path NOT IN ('INDEX.md', 'AGENTS.md', 'README.md')"
+        ).fetchall()
+        if non_moc:
+            linked_targets = {
+                r["target_path"] for r in conn.execute("SELECT DISTINCT target_path FROM links").fetchall()
+            }
+            orphans = sum(1 for r in non_moc if r["rel_path"] not in linked_targets)
+            orphan_ratio = min(1.0, orphans / len(non_moc))
+    except sqlite3.OperationalError:
+        orphan_ratio = 0.0
+
+    distill_excess = 0.0
+    distill_file = vault_dir / "02-operating-system" / "autonomous-rsi-distillations.md"
+    if distill_file.is_file():
+        try:
+            line_cnt = len(distill_file.read_text(encoding="utf-8", errors="replace").splitlines())
+            distill_excess = min(1.0, max(0.0, (line_cnt - 120) / 120.0))
+        except OSError:
+            distill_excess = 0.0
+
+    q_bloat = round(min(1.0, 0.5 * (orphan_ratio + distill_excess)), 6)
+    return {
+        "q_latency": q_latency,
+        "q_staleness": q_staleness,
+        "q_bloat": q_bloat,
+    }
+
+
+def compute_lyapunov_potential(objective_j: float, queues: dict[str, float]) -> dict[str, float]:
+    """
+    Compute the Constrained Lyapunov Drift-Plus-Penalty potential:
+      V_t = (1 - J) + lambda_lat * Q_latency + lambda_stale * Q_staleness + lambda_bloat * Q_bloat
+    Also returns deterministic potential `lyapunov_v_det` excluding wall-clock latency jitter.
+    """
+    q_lat = float(queues.get("q_latency", 0.0))
+    q_stale = float(queues.get("q_staleness", 0.0))
+    q_bloat = float(queues.get("q_bloat", 0.0))
+    base_err = max(0.0, 1.0 - float(objective_j))
+    v_det = base_err + LAMBDA_STALENESS * q_stale + LAMBDA_BLOAT * q_bloat
+    v_total = v_det + LAMBDA_LATENCY * q_lat
+    return {
+        "lyapunov_v": round(v_total, 6),
+        "lyapunov_v_det": round(v_det, 6),
     }
 
 
@@ -443,7 +765,7 @@ def tune_retrieval_policy(
     best_heldout = base_heldout
     evaluated_count = 1
 
-    def _try_candidate(cand: dict[str, Any]) -> None:
+    def _try_candidate(cand: dict[str, Any]) -> bool:
         nonlocal best_policy, best_eval, evaluated_count
         evaluated_count += 1
         ev = evaluate_retrieval_benchmark(conn, vault_dir, hybrid_retrieve_fn, policy=cand, probes=opt_probes)
@@ -456,38 +778,57 @@ def tune_retrieval_policy(
         ):
             best_policy = copy.deepcopy(cand)
             best_eval = ev
+            return True
+        return False
 
-    for k_rrf in (12.0, 18.0, 24.0, 30.0):
-        for exact_boost in (0.025, 0.045, 0.065, 0.085):
-            cand = copy.deepcopy(best_policy)
-            cand["k_rrf"] = k_rrf
-            cand["exact_id_boost"] = exact_boost
-            _try_candidate(cand)
-
-    for w_hips, w_fts in ((1.25, 0.85), (1.35, 0.80), (1.15, 0.95)):
-        cand = copy.deepcopy(best_policy)
-        cand["w_hips"] = w_hips
-        cand["w_fts_with_hips"] = w_fts
-        _try_candidate(cand)
-
-    for bm25_w in (
+    # Adaptive multi-round coordinate search with step halving across all 8 continuous retrieval parameters
+    param_specs: list[tuple[str, float, float, float]] = [
+        ("k_rrf", 4.0, 60.0, 6.0),
+        ("exact_id_boost", 0.005, 0.15, 0.02),
+        ("w_hips", 0.5, 2.0, 0.15),
+        ("w_fts_with_hips", 0.3, 1.8, 0.15),
+        ("w_vec", 0.4, 2.5, 0.20),
+        ("graph_1hop_boost", 1.0, 1.5, 0.08),
+        ("graph_neighbor_lead_factor", 0.05, 0.60, 0.08),
+        ("episodic_dampening", 0.25, 0.90, 0.10),
+    ]
+    bm25_presets: tuple[list[float], ...] = (
         [1.8, 4.5, 1.5, 3.0, 3.8, 1.0, 1.0],
         [2.0, 5.0, 1.5, 3.2, 4.2, 1.0, 1.0],
         [1.5, 4.0, 1.5, 2.5, 3.0, 1.0, 1.0],
-    ):
-        cand = copy.deepcopy(best_policy)
-        cand["bm25_weights"] = bm25_w
-        _try_candidate(cand)
+        [1.2, 3.5, 1.2, 2.2, 2.8, 1.0, 1.0],
+        [2.2, 5.5, 1.8, 3.5, 4.5, 1.2, 1.0],
+    )
 
-    for graph_boost in (1.05, 1.12, 1.18, 1.25):
-        cand = copy.deepcopy(best_policy)
-        cand["graph_1hop_boost"] = graph_boost
-        _try_candidate(cand)
+    for round_idx in range(2):
+        scale = 0.5**round_idx
+        round_improved = False
+        for key, lo, hi, init_step in param_specs:
+            cur_val = float(best_policy.get(key, DEFAULT_RETRIEVAL_POLICY[key]))
+            step = init_step * scale
+            tried_vals = {round(cur_val, 4)}
+            for direction in (-1.0, 1.0):
+                prop = round(max(lo, min(hi, cur_val + direction * step)), 4)
+                if prop in tried_vals:
+                    continue
+                tried_vals.add(prop)
+                cand = copy.deepcopy(best_policy)
+                cand[key] = prop
+                if _try_candidate(cand):
+                    round_improved = True
+                    cur_val = prop
 
-    for ep_damp in (0.45, 0.55, 0.68):
-        cand = copy.deepcopy(best_policy)
-        cand["episodic_dampening"] = ep_damp
-        _try_candidate(cand)
+        if round_idx == 0:
+            for bm25_w in bm25_presets:
+                if bm25_w == best_policy.get("bm25_weights"):
+                    continue
+                cand = copy.deepcopy(best_policy)
+                cand["bm25_weights"] = list(bm25_w)
+                if _try_candidate(cand):
+                    round_improved = True
+
+        if not round_improved:
+            break
 
     # Evaluate held-out generalization probes strictly once after coordinate search completes (zero selection leakage)
     if heldout_probes and best_eval["objective_j"] > base_eval["objective_j"] + 1e-6:
@@ -1102,6 +1443,8 @@ def run_rsi_cycle(
         if heldout_probes
         else before_eval
     )
+    queues_before = compute_vault_health_queues(conn, vault_dir, latency_p95_ms=before_eval.get("latency_p95_ms", 0.0))
+    lyapunov_before = compute_lyapunov_potential(before_eval["objective_j"], queues_before)
     conn.close()
 
     consolidation = heal_and_consolidate_vault(
@@ -1132,6 +1475,8 @@ def run_rsi_cycle(
         if heldout_probes
         else after_eval
     )
+    queues_after = compute_vault_health_queues(conn, vault_dir, latency_p95_ms=after_eval.get("latency_p95_ms", 0.0))
+    lyapunov_after = compute_lyapunov_potential(after_eval["objective_j"], queues_after)
     conn.close()
 
     rust_cert_status = "SKIPPED"
@@ -1174,6 +1519,7 @@ def run_rsi_cycle(
     # the distill/INDEX keys, so its truthiness said nothing).
     heal_wrote_files = bool(getattr(snapshots, "written", None))
     heal_tolerance = -5e-4 if heal_wrote_files else -1e-6
+    bloat_regressed = bool(queues_after["q_bloat"] > queues_before["q_bloat"] + 0.05 and not heal_wrote_files)
     regressed = (
         rank_regressed
         or (delta_j_tune < -1e-6)
@@ -1181,6 +1527,7 @@ def run_rsi_cycle(
         or (delta_j_heal < heal_tolerance)
         or (heldout_delta_j < heal_tolerance)
         or intrusion_regressed
+        or bloat_regressed
         or rust_gate_failed
     )
 
@@ -1195,6 +1542,8 @@ def run_rsi_cycle(
         sync_fn(argparse.Namespace(vault=str(vault_dir), force=False, no_embed=no_embed, quiet=True))
         after_eval = before_eval
         after_heldout = before_heldout
+        queues_after = queues_before
+        lyapunov_after = lyapunov_before
         delta_j = 0.0
         delta_j_heal = 0.0
         delta_j_tune = 0.0
@@ -1210,14 +1559,14 @@ def run_rsi_cycle(
         has_consolidation_progress = (
             bool(consolidation.get("healed_frontmatter"))
             or bool(consolidation.get("healed_orphans"))
-            or int(consolidation.get("distilled_entries") or 0) > 0
+            or heal_wrote_files
         )
-        if delta_j > 1e-6:
+        if delta_j > 1e-6 and heldout_delta_j >= -1e-6:
             status = "MONOTONIC_IMPROVEMENT"
-        elif delta_j >= -1e-6 and has_consolidation_progress:
-            status = "NON_REGRESSION_CONSOLIDATION"
-        elif delta_j < -1e-6 and has_consolidation_progress:
+        elif (delta_j < -1e-6 or heldout_delta_j < -1e-6) and has_consolidation_progress:
             status = "TOLERATED_CONSOLIDATION"
+        elif delta_j >= -1e-6 and heldout_delta_j >= -1e-6 and has_consolidation_progress:
+            status = "NON_REGRESSION_CONSOLIDATION"
         else:
             status = "FIXED_POINT_CONVERGED"
 
@@ -1251,6 +1600,8 @@ def run_rsi_cycle(
     soar_chunk_rep["retrieval_candidates_count"] = len(live_cands)
 
     is_strictly_monotonic = bool((not regressed) and (delta_j >= -1e-6) and (heldout_delta_j >= -1e-6))
+    delta_v = round(lyapunov_after["lyapunov_v"] - lyapunov_before["lyapunov_v"], 6)
+    delta_v_det = round(lyapunov_after["lyapunov_v_det"] - lyapunov_before["lyapunov_v_det"], 6)
 
     ledger_entry = append_rsi_ledger(
         vault_dir,
@@ -1269,6 +1620,14 @@ def run_rsi_cycle(
             "heldout_j_after": after_heldout["objective_j"],
             "heldout_delta_j": heldout_delta_j,
             "attempted_heldout_delta_j": attempted_heldout_delta_j,
+            "lyapunov_v_before": lyapunov_before["lyapunov_v"],
+            "lyapunov_v_after": lyapunov_after["lyapunov_v"],
+            "delta_v": delta_v,
+            "lyapunov_v_det_before": lyapunov_before["lyapunov_v_det"],
+            "lyapunov_v_det_after": lyapunov_after["lyapunov_v_det"],
+            "delta_v_det": delta_v_det,
+            "latency_p95_ms": after_eval.get("latency_p95_ms", 0.0),
+            "vault_queues": queues_after,
             "ledger_intrusions": after_eval.get("ledger_intrusions", 0),
             "mrr_before": before_eval["mrr_at_5"],
             "mrr_after": after_eval["mrr_at_5"],
@@ -1296,6 +1655,13 @@ def run_rsi_cycle(
         "timestamp": ledger_entry["timestamp"],
         "vault_dir": str(vault_dir),
         "lyapunov_monotonic": is_strictly_monotonic,
+        "lyapunov_v_before": lyapunov_before["lyapunov_v"],
+        "lyapunov_v_after": lyapunov_after["lyapunov_v"],
+        "delta_v": delta_v,
+        "lyapunov_v_det_before": lyapunov_before["lyapunov_v_det"],
+        "lyapunov_v_det_after": lyapunov_after["lyapunov_v_det"],
+        "delta_v_det": delta_v_det,
+        "vault_queues": queues_after,
         "before": before_eval,
         "after": after_eval,
         "heldout_before": before_heldout,

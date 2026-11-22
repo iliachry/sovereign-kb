@@ -22,6 +22,7 @@ class RetrievalPolicy:
     w_fts_solo: float = 1.0
     w_vec: float = 1.20
     exact_id_boost: float = 0.025
+    episodic_dampening: float = 0.55
     graph_1hop_boost: float = 1.15
     graph_neighbor_lead_factor: float = 0.28
     bm25_weights: list[float] = field(default_factory=lambda: [1.5, 4.0, 1.5, 2.5, 3.0, 1.0, 1.0])
@@ -42,6 +43,7 @@ class RetrievalPolicy:
             w_fts_solo=float(raw.get("w_fts_solo", 1.0)),
             w_vec=float(raw.get("w_vec", 1.20)),
             exact_id_boost=float(raw.get("exact_id_boost", 0.025)),
+            episodic_dampening=float(raw.get("episodic_dampening", 0.55)),
             graph_1hop_boost=float(raw.get("graph_1hop_boost", 1.15)),
             graph_neighbor_lead_factor=float(raw.get("graph_neighbor_lead_factor", 0.28)),
             bm25_weights=[float(x) for x in bm25],
@@ -57,6 +59,7 @@ class RetrievalPolicy:
             "w_fts_solo": self.w_fts_solo,
             "w_vec": self.w_vec,
             "exact_id_boost": self.exact_id_boost,
+            "episodic_dampening": self.episodic_dampening,
             "graph_1hop_boost": self.graph_1hop_boost,
             "graph_neighbor_lead_factor": self.graph_neighbor_lead_factor,
             "bm25_weights": list(self.bm25_weights),
