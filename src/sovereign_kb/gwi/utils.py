@@ -178,16 +178,21 @@ def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     out: list[Path] = []
     if not root.is_dir():
         return out
+    # Only directories below the audited root count: where a project is stored must not decide what is read.
+    # Every `rglob` result starts with the root's own parts, so slicing them off equals
+    # `p.relative_to(root).parts` without its per-path cost in this loop.
+    below_root = len(root.parts)
     for p in root.rglob("*"):
-        if any(part in ignore_dirs for part in p.parts):
+        if any(part in ignore_dirs for part in p.parts[below_root:]):
             continue
         if p.is_file() and p.suffix.lower() in suffixes:
             out.append(p)
     return sorted(out)
 
 
-def _is_test_file(path: Path) -> bool:
-    if any(part in ("tests", "test", "__tests__", "e2e") for part in path.parts):
+def _is_test_file(path: Path, root: Path) -> bool:
+    # Judged below the audited root only, so a project kept under a folder named `tests` is not all tests.
+    if any(part in ("tests", "test", "__tests__", "e2e") for part in path.relative_to(root).parts):
         return True
     return bool(re.search(r"(^|[._-])(test|spec)s?([._-]|$)", path.stem))
 

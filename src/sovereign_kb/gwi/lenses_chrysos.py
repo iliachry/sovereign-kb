@@ -290,7 +290,7 @@ def eval_chrysos_lens(
         src_files = [
             f
             for f in (_iter_source_files(root, (".py", ".ts", ".tsx", ".js", ".rs", ".sh")) if root.is_dir() else [])
-            if not _is_test_file(f) and f.name not in ("gwi.py", "lenses.py", "agents.py")
+            if not _is_test_file(f, root) and f.name not in ("gwi.py", "lenses.py", "agents.py")
         ]
         src_corpus = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in src_files[:50])
         _gl_prefix = "glpat" + "-"

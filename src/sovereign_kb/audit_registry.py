@@ -405,7 +405,8 @@ def compute_subproject_fingerprint(
             "**/walkthrough-report.json",
         ):
             for p_ev in sorted(ev_root.glob(pat)):
-                if any(part in (".git", "node_modules", ".venv", "target", "dist", "build") for part in p_ev.parts):
+                rel_parts = p_ev.relative_to(ev_root).parts  # judged below the audited root, not in the path to it
+                if any(part in (".git", "node_modules", ".venv", "target", "dist", "build") for part in rel_parts):
                     continue
                 if p_ev.name in ("goldwood.json", "gate_receipt.json", "elenchus_challenge.json") or p_ev in seen_ev:
                     continue

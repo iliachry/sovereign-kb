@@ -47,7 +47,9 @@ def evaluate_app_profile(
 
     # 1. Inspect Catalog & Walkthrough Parity (U — Instrument Usability & Feature Parity)
     cat_ids, cat_src = _extract_catalog_ids(root)
-    test_files = [p for p in _iter_source_files(root, (".ts", ".tsx", ".js", ".mjs", ".py", ".rs")) if _is_test_file(p)]
+    test_files = [
+        p for p in _iter_source_files(root, (".ts", ".tsx", ".js", ".mjs", ".py", ".rs")) if _is_test_file(p, root)
+    ]
     test_corpus = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in test_files)
     has_real_test_defs = bool(
         re.search(
@@ -275,9 +277,9 @@ def evaluate_app_profile(
     js_files = [
         p
         for p in _iter_source_files(root, (".ts", ".tsx", ".js", ".jsx", ".mjs", ".vue", ".svelte"))
-        if not _is_test_file(p)
+        if not _is_test_file(p, root)
     ]
-    py_files = [p for p in _iter_source_files(root, (".py",)) if not _is_test_file(p)]
+    py_files = [p for p in _iter_source_files(root, (".py",)) if not _is_test_file(p, root)]
     unseeded_random_hits: list[str] = []
 
     for p in js_files:
@@ -478,7 +480,7 @@ def evaluate_app_profile(
     # Scan non-test source files for hardcoded secret leaks (Lambda_conscience == 0 on secretLeaks > 0)
     secret_hit_files: list[str] = []
     for sp in src_files:
-        if _is_test_file(sp) or sp.name in ("gwi.py", "agents.py"):
+        if _is_test_file(sp, root) or sp.name in ("gwi.py", "agents.py"):
             continue
         txt = sp.read_text(encoding="utf-8", errors="ignore")
         if _SECRET_LEAK_RE.search(txt):
