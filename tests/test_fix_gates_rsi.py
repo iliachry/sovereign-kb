@@ -124,8 +124,21 @@ def test_kb_bare_repo_prefix_no_longer_satisfies_gate(tmp_path: Path) -> None:
     head = _commit(repo, "a.py", "x=1\n", "feat: thing")
     unrelated = _vault(tmp_path / "a", "- sovereign cloud musings, nothing about this repo\n")
     assert not _check(repo, None, head, unrelated)[0]
-    logged = _vault(tmp_path / "b", "- shipped sovereign-widget v1\n")
+    # Even the full repo name is only a hint now; the pushed SHA is the evidence.
+    name_only = _vault(tmp_path / "b", "- shipped sovereign-widget v1\n")
+    assert not _check(repo, None, head, name_only)[0]
+    logged = _vault(tmp_path / "c", f"- shipped sovereign-widget v1 ({head[:7]})\n")
     assert _check(repo, None, head, logged)[0]
+
+
+def test_kb_ticket_or_earlier_unrelated_mention_is_not_evidence(tmp_path: Path) -> None:
+    repo = _init(tmp_path, "ticket-svc")
+    head = _commit(repo, "a.py", "x=1\n", "feat(F-20): elenchus gate")
+    # Ticket id and repo name from an earlier, unrelated entry the same day do not satisfy the gate.
+    vault = _vault(tmp_path / "v", "- 09:00 ticket-svc: stale-work scan, F-20 still open\n")
+    passed, _, details = _check(repo, None, head, vault)
+    assert not passed
+    assert any(head[:7] in d for d in details)
 
 
 # --------------------------------------------------------------------------- readme_check

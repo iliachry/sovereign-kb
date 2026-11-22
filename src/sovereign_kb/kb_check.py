@@ -9,11 +9,12 @@ Checked against the exact commits being pushed:
   2. Trivial Commits: pure chores/maintenance (e.g. `chore(deps):`, `ci:`, `style:`) or
      commits containing `[skip-kb]` or `[no-kb]` pass with an informational notice.
   3. Milestone Matching: for `feat`, `fix`, `refactor`, `perf`, or significant changes,
-     verifies that at least one of the following appears in today's episodic log
-     (`me-kb/04-episodic/YYYY-MM-DD-log.md`), yesterday's log, or `01-now/now.md`:
-       - The repository name or slug (e.g. `my-service`, `web-platform`, `core-engine`)
-       - Any commit SHA (short 7-char or full) being pushed
-       - Any ticket/feature reference (e.g. `OP#101`, `PROJ-532`, `FEAT-01`, `ADR-01`)
+     verifies that the SHA (>= 7 hex chars, e.g. `git log --format=%h`) of at least one commit
+     being pushed appears in today's episodic log (`me-kb/04-episodic/YYYY-MM-DD-log.md`),
+     yesterday's log, or `01-now/now.md`.
+     The repository name or a ticket reference (`OP#101`, `FEAT-01`) alone is NOT evidence:
+     both recur across many pushes, so any earlier same-day mention satisfied the gate without
+     this push ever being logged. Workflow: commit -> write the SHA into the log -> push.
 
 Usage:
   kb_check.py [REPO] [--base SHA] [--head SHA] [--vault PATH]
@@ -75,7 +76,6 @@ TRIVIAL_PREFIXES = (
 
 SKIP_MARKERS = ("[skip-kb]", "[no-kb]", "[kb-skip]", "--skip-kb")
 HEX_TOKEN_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])")
-TICKET_RE = re.compile(r"\b(?:OP#\d+|DT-\d+|PV-[A-Z0-9-]+|FEAT-\d+|F-\d+|ISSUE-\d+|[A-Z]{2,}-\d+)\b", re.I)
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -213,75 +213,37 @@ def check_kb_reflection(
             [f"Expected today's log at {today_file}"],
         )
 
-    # 6. Extract search patterns
-    # Repo variants: the exact name and its `_` / space spellings only. A bare first word
-    # (e.g. "sovereign" for "sovereign-kb") matches unrelated log text and made the gate vacuous.
+    # 6. Evidence = a SHA prefix (>= 7 hex chars) of a commit being pushed. Repo-name and ticket
+    # mentions are reported as hints only — they recur across pushes and proved nothing.
+    commit_shas = {sha.lower() for sha, _ in commits}
     full_lower = repo_name.lower()
     repo_variants = {full_lower, full_lower.replace("-", "_"), full_lower.replace("-", " ")}
+    repo_patterns = [re.compile(r"(?<![a-zA-Z0-9_-])" + re.escape(v) + r"(?![a-zA-Z0-9_-])") for v in repo_variants]
 
-    commit_shas = {sha.lower() for sha, _ in commits}
-    tickets = set()
-    for _, subj in commits:
-        for t in TICKET_RE.findall(subj):
-            tickets.add(t.upper())
-
-    # 7. Search for matches in episodic logs
-    matched_target = None
-    matched_file = None
-    matched_line_no = None
-    matched_line_text = None
-
+    # 7. Search for a pushed-commit SHA in the episodic corpus
+    matched: tuple[Path, int, str, str] | None = None
+    repo_hint: tuple[Path, int] | None = None
     for fpath, text in corpus_sources:
-        lines = text.splitlines()
-        for idx, line in enumerate(lines, 1):
+        for idx, line in enumerate(text.splitlines(), 1):
             line_lower = line.lower()
-            line_upper = line.upper()
-
-            # Check repo variants
-            for variant in repo_variants:
-                # Word-boundary pattern to avoid matching accidental substrings
-                pattern = r"(?<![a-zA-Z0-9_-])" + re.escape(variant) + r"(?![a-zA-Z0-9_-])"
-                if re.search(pattern, line_lower):
-                    matched_target = f"repo '{variant}'"
-                    matched_file = fpath
-                    matched_line_no = idx
-                    matched_line_text = line.strip()
-                    break
-            if matched_target:
-                break
-
-            # Check commit SHAs: any hex token (>= 7 chars, e.g. `%h`) that prefixes a pushed full SHA
             for tok in HEX_TOKEN_RE.findall(line_lower):
-                sha = next((s_ for s_ in commit_shas if s_.startswith(tok)), None)
-                if sha:
-                    matched_target = f"commit sha '{tok}'"
-                    matched_file = fpath
-                    matched_line_no = idx
-                    matched_line_text = line.strip()
+                if any(s_.startswith(tok) for s_ in commit_shas):
+                    matched = (fpath, idx, tok, line.strip())
                     break
-            if matched_target:
+            if matched:
                 break
-
-            # Check tickets
-            for ticket in tickets:
-                if ticket in line_upper:
-                    matched_target = f"ticket '{ticket}'"
-                    matched_file = fpath
-                    matched_line_no = idx
-                    matched_line_text = line.strip()
-                    break
-            if matched_target:
-                break
-        if matched_target:
+            if repo_hint is None and any(p.search(line_lower) for p in repo_patterns):
+                repo_hint = (fpath, idx)
+        if matched:
             break
 
     rel_today = today_file.relative_to(vault)
-    if matched_target:
-        rel_matched = matched_file.relative_to(vault)
+    if matched:
+        fpath, line_no, tok, line_text = matched
         return (
             True,
-            f"[kb-check] {repo_name} matched in me-kb ({rel_matched}:{matched_line_no}) PASS",
-            [f"Evidence: {matched_line_text[:90]}"],
+            f"[kb-check] {repo_name} commit {tok} logged in me-kb ({fpath.relative_to(vault)}:{line_no}) PASS",
+            [f"Evidence: {line_text[:90]}"],
         )
 
     # 8. No match found
@@ -290,13 +252,21 @@ def check_kb_reflection(
         commit_summary.append(f"  • ... and {len(commits) - 5} more commit(s)")
 
     msg = f"[kb-check] {repo_name} FAIL — {len(commits)} commit(s) not reflected in me-kb ({rel_today}):"
+    head_short = commits[-1][0][:7]  # tip of the push (rev-list is --reverse)
     details = [
         *commit_summary,
-        f"Neither '{repo_name}' nor commit IDs appear in {today_file.name}.",
-        "To satisfy the sovereign reflection gate:",
-        f'  1) Capture this milestone: kb capture "{repo_name}: <summary>"',
-        f"  2) Or record it in ~/GitLab/me-kb/{rel_today}",
-        "Override knowingly if trivial: git push --no-verify or add [skip-kb] to commit message.",
+        f"No SHA of the commit(s) being pushed appears in {today_file.name}, yesterday's log or now.md.",
+    ]
+    if repo_hint is not None:
+        details.append(
+            f"('{repo_name}' is mentioned at {repo_hint[0].relative_to(vault)}:{repo_hint[1]}, "
+            "but a repo-name mention is not evidence that this push was logged.)"
+        )
+    details += [
+        "To satisfy the sovereign reflection gate, log the SHA you are pushing:",
+        f'  1) kb capture "{repo_name} {head_short}: <summary>"',
+        f"  2) Or write `{head_short}` into ~/GitLab/me-kb/{rel_today}",
+        "Override knowingly if trivial: add [skip-kb] to the commit message.",
     ]
     return False, msg, details
 

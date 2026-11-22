@@ -1706,14 +1706,21 @@ def test_kb_check_verifies_me_kb_reflection(tmp_path: Path) -> None:
     assert passed
     assert "maintenance commit" in msg
 
-    # 4. When repo is mentioned in today-log.md, passes
+    # 4. A repo-name mention alone is NOT evidence (it recurs across pushes); the failure hints at it
     today_file.write_text("# Episodic Log\n\n- Shipped my-service milestone\n", encoding="utf-8")
     git("commit", "--amend", "-qm", "feat(service): launch v1")
     head_logged = git("rev-parse", "HEAD")
     passed, msg, details = check_kb_reflection(repo, None, head_logged, vault_path=vault, strict=True)
+    assert not passed
+    assert any("not evidence" in d for d in details)
+    assert any(head_logged[:7] in d for d in details)
+
+    # 5. Logging the pushed commit's short SHA passes
+    today_file.write_text(f"# Episodic Log\n\n- Shipped my-service milestone `{head_logged[:7]}`\n", encoding="utf-8")
+    passed, msg, details = check_kb_reflection(repo, None, head_logged, vault_path=vault, strict=True)
     assert passed
     assert "PASS" in msg
-    assert any("my-service" in d for d in details)
+    assert any(head_logged[:7] in d for d in details)
 
 
 def test_validate_skill_frontmatter(tmp_path: Path) -> None:

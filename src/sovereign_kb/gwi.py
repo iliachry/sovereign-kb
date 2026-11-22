@@ -225,6 +225,38 @@ def validate_skill_frontmatter(path: Path | str) -> tuple[bool, str]:
     return True, "OK"
 
 
+# Code suffixes for the GWI-APP-E01 empty-scan guard (any language counts as "something was scanned").
+_EMPTY_SCAN_CODE_SUFFIXES: tuple[str, ...] = (
+    ".py",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".vue",
+    ".svelte",
+    ".rs",
+    ".go",
+    ".java",
+    ".kt",
+    ".swift",
+    ".cs",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".rb",
+    ".php",
+    ".gd",
+    ".lua",
+    ".sh",
+    ".sol",
+    ".zig",
+)
+
+
 def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     ignore_dirs = {
         ".git",
@@ -380,6 +412,26 @@ def evaluate_app_profile(
     root = target_dir.resolve()
     blockers: list[dict[str, str]] = []
     notes: list[str] = []
+
+    # 0. Empty-scan guard (fail closed). Most app probes are "no bad pattern found in the scanned files";
+    # on an empty file list they pass vacuously. A repo whose walk yields zero source files is either
+    # mis-targeted or hidden by the ignore list — never certify it.
+    scanned_sources = _iter_source_files(root, _EMPTY_SCAN_CODE_SUFFIXES)
+    if not scanned_sources:
+        blockers.append(
+            {
+                "id": "GWI-APP-E01",
+                "severity": "P0",
+                "dimension": "S (System Architecture & Gate Hygiene)",
+                "message": (
+                    "Empty source scan: 0 source files found under the target after ignore-list pruning "
+                    f"(suffixes: {', '.join(_EMPTY_SCAN_CODE_SUFFIXES)}). Every pattern probe would pass vacuously; "
+                    "point the audit at the code root or use a non-app profile."
+                ),
+            }
+        )
+    else:
+        notes.append(f"Source scan covered {len(scanned_sources)} file(s) (empty-scan guard GWI-APP-E01 satisfied).")
 
     # 1. Inspect Catalog & Walkthrough Parity (U — Instrument Usability & Feature Parity)
     cat_ids, cat_src = _extract_catalog_ids(root)
@@ -711,6 +763,10 @@ def evaluate_app_profile(
                 "message": "Missing `scripts/quality_gate.sh` and `package.json`/`pyproject.toml` verification config.",
             }
         )
+    if not scanned_sources:
+        # GWI-APP-E01: an empty scan must fail the gate, not just annotate it (blockers alone never lower G).
+        score_s = min(score_s, 6.5)
+        probe_states["S"] = "FAIL"
 
     # 8. Release Evidence, Runtime Diagnostics & Walkthrough (R) + Console Hygiene Lambda (worst-case preserved!)
     conscience_clean = True

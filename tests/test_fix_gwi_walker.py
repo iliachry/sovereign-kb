@@ -53,3 +53,23 @@ class Helper:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_mod.py").write_text(src, encoding="utf-8")
     assert _static_test_count(tmp_path)["python"] == 2
+
+
+def test_empty_source_scan_is_a_p0_blocker_and_fails(tmp_path: Path) -> None:
+    from sovereign_kb.gwi import evaluate_app_profile
+
+    # A docs-only tree (or one whose code all lives in ignored dirs) must never certify.
+    empty = tmp_path / "empty"
+    (empty / "node_modules" / "dep").mkdir(parents=True)
+    (empty / "node_modules" / "dep" / "index.js").write_text("module.exports = 1\n", encoding="utf-8")
+    (empty / "README.md").write_text("# empty\n", encoding="utf-8")
+    rep = evaluate_app_profile(empty)
+    assert "GWI-APP-E01" in [b["id"] for b in rep["blockers"]]
+    assert rep["probe_states"]["S"] == "FAIL"
+    assert rep["tiers"]["S_sub"] < 7.0
+
+    code = tmp_path / "code"
+    (code / "src").mkdir(parents=True)
+    (code / "src" / "main.go").write_text("package main\n", encoding="utf-8")
+    rep2 = evaluate_app_profile(code)
+    assert "GWI-APP-E01" not in [b["id"] for b in rep2["blockers"]]

@@ -164,6 +164,7 @@ skb dashboard --export
 | Run the Unified Sovereign Organon CLI (`organon status`, `organon showcase`, `organon task`, `organon elenchus`, `organon finish`, `organon sync-state`, `organon chain`, `organon evr`) | `organon status --all-nodes` |
 | Run Pistis On-Chain Bilateral Negotiation, RFC 6962 Merkle Anchor, PhD Tokenomics & Software Aristocracy (`skb chain` / `organon chain`) | `organon chain full-suite` |
 | Pack, inspect, search, query via SQL, zero-copy `mmap` tensors, Merkle-verify, and seal GWI/Paper/Vault/Show/Twin `.evr` ("Everything" v1.0) capsules (`evr`, `skb evr`, `organon evr`, `evr seal-gwi --require-elenchus`, `evr seal-paper`, `evr pack-vault`, `evr pack-show`, `evr pack-twin`, `skb gwi audit --seal --require-elenchus`) | `evr bench` |
+| Generate a 0600 `.evr` signing key, register trusted signers, seal with `--key-file`, and require a registry-trusted signature (`evr keygen --name NAME [--out PATH] [--print-key]`, `evr trust add <keyfile> [--name]`, `evr trust list`, `evr trust remove <key_id>`, `evr verify --require-trusted`) | `evr keygen --name me` |
 
 ---
 
@@ -203,6 +204,7 @@ Also included in every full starter vault (`src/sovereign_kb/starter_vault/02-op
 | `KB_CHAT_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Primary OpenAI-compatible chat endpoint for `skb ask` |
 | `KB_OLLAMA_URL` | `http://127.0.0.1:11434/v1/chat/completions` | Fallback Ollama chat endpoint for `skb ask` |
 | `SKB_EVR_SIGN_KEY` | unset → public demo key (warns; `signature_trust: public-demo-key`) | HMAC key for sealing and verifying `.evr` capsules. A capsule signed with the public demo key proves nothing about who sealed it — set your own key for real provenance; `evr verify --require-signature` exits 1 if a signed capsule cannot be checked |
+| `SKB_EVR_TRUSTED_KEYS` | `~/.config/sovereign-kb/evr-trusted-keys.json` | Trusted `.evr` signer registry (`key_id` → name + key file; atomic 0600 writes). `evr verify` auto-uses a registry key matching the capsule's `signer_key_id` and reports `signature_trust: trusted-key:<name>` |
 | `SWM_AUDIT_REGISTRY` | `~/.swm/audit_registry.json` | Path to the GWI audit registry (atomic writes, `flock`-guarded; a corrupt file is backed up to `*.corrupt-<ts>` and reported instead of being reset) |
 
 ---

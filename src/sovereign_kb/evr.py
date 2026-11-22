@@ -41,6 +41,7 @@ import mimetypes
 import mmap
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import struct
@@ -89,6 +90,145 @@ def _resolve_seal_key(sign_key: str | None) -> str:
             file=sys.stderr,
         )
     return key
+
+
+# ---------------------------------------------------------------------------
+# Signer key identity + trusted key registry (stdlib-only)
+# ---------------------------------------------------------------------------
+EVR_TRUSTED_KEYS_ENV = "SKB_EVR_TRUSTED_KEYS"
+_KEY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def evr_key_id(sign_key: str) -> str:
+    """Signer key id: first 16 hex chars of sha256 over the HMAC key bytes (UTF-8 of the key string)."""
+    return hashlib.sha256(sign_key.encode("utf-8")).hexdigest()[:16]
+
+
+def default_evr_keys_dir() -> Path:
+    return Path.home() / ".config" / "sovereign-kb" / "evr-keys"
+
+
+def trusted_keys_path() -> Path:
+    env = os.environ.get(EVR_TRUSTED_KEYS_ENV, "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".config" / "sovereign-kb" / "evr-trusted-keys.json"
+
+
+def read_evr_key_file(path: str | Path) -> str:
+    """Read an HMAC key from a key file (first non-empty line); warn when group/other can read it."""
+    p = Path(path).expanduser()
+    lines = [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    key = lines[0] if lines else ""
+    if not key:
+        raise ValueError(f"Empty .evr key file: {p}")
+    if p.stat().st_mode & 0o077:
+        print(f"Warning: .evr key file {p} is readable by group/other (expected mode 0600)", file=sys.stderr)
+    return key
+
+
+def generate_evr_key(name: str = "default", out: str | Path | None = None) -> dict[str, str]:
+    """Create a 32-byte random HMAC key in a new 0600 file (never overwrites). Returns key, key_id, path."""
+    if not _KEY_NAME_RE.match(name):
+        raise ValueError(f"Invalid key name {name!r} (allowed: letters, digits, '.', '_', '-')")
+    path = Path(out).expanduser() if out else default_evr_keys_dir() / f"{name}.key"
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"Refusing to overwrite existing key file: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = secrets.token_hex(32)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, (key + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+    return {"key": key, "key_id": evr_key_id(key), "path": str(path.resolve())}
+
+
+def load_trusted_keys(path: str | Path | None = None) -> dict[str, dict[str, Any]]:
+    """Load the trusted signer registry {key_id: {name, key_path|key_hex, added}}; missing/corrupt -> {}."""
+    p = Path(path) if path else trusted_keys_path()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+
+
+def _save_trusted_keys(registry: dict[str, dict[str, Any]], path: str | Path | None = None) -> Path:
+    p = Path(path) if path else trusted_keys_path()
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, tmp = tempfile.mkstemp(prefix=f".{p.name}.", suffix=".tmp", dir=str(p.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(registry, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, p)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return p
+
+
+def _trusted_entry_key(entry: dict[str, Any]) -> str | None:
+    if entry.get("key_hex"):
+        return str(entry["key_hex"])
+    if entry.get("key_path"):
+        try:
+            return read_evr_key_file(entry["key_path"])
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def trust_add_key(key_file: str | Path, name: str | None = None) -> dict[str, Any]:
+    kp = Path(key_file).expanduser().resolve()
+    key = read_evr_key_file(kp)
+    kid = evr_key_id(key)
+    entry = {
+        "name": name or kp.stem,
+        "key_path": str(kp),
+        "added": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    registry = load_trusted_keys()
+    registry[kid] = entry
+    _save_trusted_keys(registry)
+    return {"key_id": kid, **entry}
+
+
+def trust_remove_key(key_id: str) -> bool:
+    registry = load_trusted_keys()
+    if key_id not in registry:
+        return False
+    del registry[key_id]
+    _save_trusted_keys(registry)
+    return True
+
+
+def lookup_trusted_key(key_id: str | None) -> tuple[str, str] | None:
+    """Return (key, name) for a registry key id whose stored key really hashes to that id."""
+    if not key_id:
+        return None
+    entry = load_trusted_keys().get(key_id)
+    if not entry:
+        return None
+    key = _trusted_entry_key(entry)
+    if not key or evr_key_id(key) != key_id:
+        return None
+    return key, str(entry.get("name", key_id))
+
+
+def _signature_trust_for(sign_key: str) -> tuple[str, str | None]:
+    """Classify a key that verified a signature -> (signature_trust, signer_name)."""
+    if sign_key == EVR_PUBLIC_DEMO_SIGN_KEY:
+        return "public-demo-key", None
+    hit = lookup_trusted_key(evr_key_id(sign_key))
+    if hit and hmac.compare_digest(hit[0].encode("utf-8"), sign_key.encode("utf-8")):
+        return f"trusted-key:{hit[1]}", hit[1]
+    return "configured-key", None
 
 
 # 64-byte Superblock:
@@ -359,19 +499,26 @@ def _canonical_signing_message(
     flags: int,
     alignment: int,
     polyglot: bool,
+    signer_key_id: str | None = None,
 ) -> bytes:
-    """Bind the Merkle root, polyglot preamble digest, and capsule identity metadata into the MAC input."""
+    """Bind the Merkle root, polyglot preamble digest, and capsule identity metadata into the MAC input.
+
+    `signer_key_id` is only bound when present, so pre-key-id capsules keep their exact MAC input.
+    """
+    header: dict[str, Any] = {
+        "evr_version": EVR_SPEC_VERSION,
+        "title": title,
+        "author": author,
+        "description": description,
+        "created_unix_ns": int(created_unix_ns),
+        "flags": int(flags),
+        "alignment": int(alignment),
+        "polyglot": bool(polyglot),
+    }
+    if signer_key_id is not None:
+        header["signer_key_id"] = str(signer_key_id)
     header_meta = json.dumps(
-        {
-            "evr_version": EVR_SPEC_VERSION,
-            "title": title,
-            "author": author,
-            "description": description,
-            "created_unix_ns": int(created_unix_ns),
-            "flags": int(flags),
-            "alignment": int(alignment),
-            "polyglot": bool(polyglot),
-        },
+        header,
         separators=(",", ":"),
         sort_keys=True,
         ensure_ascii=False,
@@ -615,12 +762,15 @@ class EvrBuilder:
         auto_graph: bool = True,
         auto_sqlite: bool = True,
         created_unix_ns: int | None = None,
+        record_key_id: bool = True,
     ) -> None:
         self.title = title
         self.author = author
         self.description = description
         self.polyglot = polyglot
         self.sign_key = sign_key
+        # Bind the signer key id into the HMAC-covered provenance (False = legacy pre-key-id format).
+        self.record_key_id = record_key_id
         self.auto_index = auto_index
         self.auto_graph = auto_graph
         self.auto_sqlite = auto_sqlite
@@ -649,6 +799,11 @@ class EvrBuilder:
         self._seen_paths.add(norm_path)
 
         resolved_kind = kind if kind is not None else infer_evr_kind(norm_path, data)
+        if kind is None and resolved_kind == EvrKind.TENSOR and not (metadata or {}).get("shape"):
+            # A `.bin`/`.npy`/... suffix alone carries no dtype/shape; tagging it TENSOR made verify() reject
+            # the builder's own capsule ("invalid TENSOR structure"). Store it as an opaque STATE blob —
+            # real tensors go through `add_tensor()` or an explicit `kind=EvrKind.TENSOR` with metadata.
+            resolved_kind = EvrKind.STATE
         if codec is None:
             if resolved_kind in (EvrKind.TENSOR, EvrKind.SQLITE, EvrKind.MEDIA, EvrKind.SPATIAL):
                 resolved_codec = EvrCodec.RAW
@@ -1489,6 +1644,9 @@ table.data-table th {{ background: var(--bg); font-weight: 600; }}
             "flags": flags,
         }
         if self.sign_key:
+            signer_key_id = evr_key_id(self.sign_key) if self.record_key_id else None
+            if signer_key_id is not None:
+                crypto_envelope["signer_key_id"] = signer_key_id
             sig_msg = _canonical_signing_message(
                 pre_merkle_root=pre_merkle_root,
                 preamble_bytes=preamble,
@@ -1499,6 +1657,7 @@ table.data-table th {{ background: var(--bg); font-weight: 600; }}
                 flags=flags,
                 alignment=EVR_ALIGNMENT,
                 polyglot=self.polyglot,
+                signer_key_id=signer_key_id,
             )
             sig = hmac.new(self.sign_key.encode("utf-8"), sig_msg, hashlib.sha256).hexdigest()
             crypto_envelope["signature_scheme"] = "HMAC-SHA256"
@@ -2143,6 +2302,7 @@ class EvrReader:
             errors.append("Footer 128-bit Merkle root prefix mismatch")
 
         sig_verified: bool | None = None
+        signer_key_id = self.signer_key_id()
         if sign_key is not None:
             if (
                 not self.chunks
@@ -2178,15 +2338,26 @@ class EvrReader:
                             flags=int(self.flags),
                             alignment=int(self.alignment),
                             polyglot=bool(self.flags & int(EvrFlags.POLYGLOT)),
+                            signer_key_id=(
+                                str(prov["signer_key_id"]) if prov.get("signer_key_id") is not None else None
+                            ),
                         )
                         expected_sig = hmac.new(sign_key.encode("utf-8"), sig_msg, hashlib.sha256).hexdigest()
                         actual_sig = str(prov.get("signature", ""))
                         sig_verified = bool(actual_sig) and hmac.compare_digest(expected_sig, actual_sig)
                         if not sig_verified:
                             errors.append("Cryptographic HMAC-SHA256 provenance signature verification failed")
+                        elif prov.get("signer_key_id") is not None and prov["signer_key_id"] != evr_key_id(sign_key):
+                            sig_verified = False
+                            errors.append("Signer key id in provenance does not match the verifying key")
                 except Exception as exc:
                     sig_verified = False
                     errors.append(f"Provenance verification error: {exc}")
+
+        trust: str | None = None
+        signer_name: str | None = None
+        if sig_verified and sign_key is not None:
+            trust, signer_name = _signature_trust_for(sign_key)
 
         return {
             "valid": len(errors) == 0,
@@ -2202,13 +2373,20 @@ class EvrReader:
             "modalities": self.manifest.get("modalities", []),
             "merkle_root": self.manifest.get("merkle_root"),
             "signature_verified": sig_verified,
-            "signature_trust": (
-                None
-                if not sig_verified
-                else ("public-demo-key" if sign_key == EVR_PUBLIC_DEMO_SIGN_KEY else "configured-key")
-            ),
+            "signature_trust": trust,
+            "signer_key_id": signer_key_id,
+            "signer_name": signer_name,
             "errors": errors,
         }
+
+    def signer_key_id(self) -> str | None:
+        """Signer key id recorded in the provenance envelope (None for unsigned / pre-key-id capsules)."""
+        try:
+            prov = json.loads(self.read_chunk("__evr__/provenance.json").decode("utf-8"))
+        except Exception:
+            return None
+        kid = prov.get("signer_key_id") if isinstance(prov, dict) else None
+        return str(kid) if kid is not None else None
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """
@@ -3432,12 +3610,16 @@ def register_evr_subparser(subparsers: Any, show_all_aliases: bool = False) -> N
                 "pack-vault",
                 "pack-show",
                 "pack-twin",
+                "keygen",
+                "trust",
             ),
-            help="EVR action (pack, inspect, verify, search, sql, tensor, extract, prove, demo, bench, seal-gwi, seal-paper, pack-vault, pack-show, pack-twin, status)",
+            help="EVR action (pack, inspect, verify, search, sql, tensor, extract, prove, demo, bench, seal-gwi, seal-paper, pack-vault, pack-show, pack-twin, keygen, trust, status)",
         )
         p.add_argument("target", nargs="?", default="", help="Path to .evr file or input directory/file")
         p.add_argument("extra", nargs="*", help="Additional arguments (query, SQL statement, or input paths)")
-        p.add_argument("-o", "--output", default="", help="Output .evr file or destination directory")
+        p.add_argument(
+            "-o", "--output", "--out", default="", help="Output .evr file, destination directory, or `keygen` key file"
+        )
         p.add_argument("--title", default="Everything Capsule (.evr)", help="Capsule title")
         p.add_argument("--author", default="Sovereign Organon", help="Capsule author")
         p.add_argument(
@@ -3446,6 +3628,9 @@ def register_evr_subparser(subparsers: Any, show_all_aliases: bool = False) -> N
             help="Emit triple-polyglot (Shell + HTML5/3D + 64B Binary) capsule",
         )
         p.add_argument("--sign-key", default="", help="HMAC-SHA256 signing/verification key")
+        p.add_argument("--key-file", default="", help="Read the HMAC-SHA256 signing/verification key from a key file")
+        p.add_argument("--name", default="", help="`keygen` / `trust add`: signer key name")
+        p.add_argument("--print-key", action="store_true", help="`keygen`: also print the secret key")
         p.add_argument(
             "--include-internal",
             action="store_true",
@@ -3455,6 +3640,11 @@ def register_evr_subparser(subparsers: Any, show_all_aliases: bool = False) -> N
             "--require-signature",
             action="store_true",
             help="`evr verify`: fail when the capsule is SIGNED but no key is available to check it",
+        )
+        p.add_argument(
+            "--require-trusted",
+            action="store_true",
+            help="`evr verify`: fail unless the signature verifies with a key from the trusted key registry",
         )
         p.add_argument("--rust", action="store_true", help="Also run native Rust (`rustc`) cross-language verification")
         p.add_argument(
@@ -3472,6 +3662,71 @@ def cmd_evr(args: argparse.Namespace) -> None:
     extra: list[str] = list(getattr(args, "extra", []) or [])
     as_json = bool(getattr(args, "json", False))
     sign_key = getattr(args, "sign_key", "") or None
+    key_file = getattr(args, "key_file", "") or ""
+    if key_file:
+        if sign_key:
+            print("Error: pass either --sign-key or --key-file, not both.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            sign_key = read_evr_key_file(key_file)
+        except (OSError, ValueError) as exc:
+            print(f"Error: cannot read key file: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    if action == "keygen":
+        try:
+            res = generate_evr_key(getattr(args, "name", "") or "default", getattr(args, "output", "") or None)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        out = {"key_id": res["key_id"], "path": res["path"]}
+        if getattr(args, "print_key", False):
+            out["key"] = res["key"]
+        if as_json:
+            print(json.dumps(out, indent=2))
+        else:
+            print(f"Generated .evr signing key: key_id={out['key_id']} path={out['path']}")
+            if "key" in out:
+                print(f"  key: {out['key']}")
+        return
+
+    if action == "trust":
+        sub = target or "list"
+        if sub == "list":
+            registry = load_trusted_keys()
+            rows = [
+                {"key_id": k, "name": v.get("name"), "source": v.get("key_path") or "key_hex", "added": v.get("added")}
+                for k, v in sorted(registry.items())
+            ]
+            if as_json:
+                print(json.dumps({"registry": str(trusted_keys_path()), "keys": rows}, indent=2))
+            else:
+                print(f"=== Trusted .evr signer keys ({len(rows)}) — {trusted_keys_path()} ===")
+                for r in rows:
+                    print(f"  {r['key_id']}  {r['name']}  {r['source']}  {r['added']}")
+            return
+        if sub in ("add", "remove") and not extra:
+            print(f"Error: `evr trust {sub}` requires a {'key file' if sub == 'add' else 'key id'}.", file=sys.stderr)
+            sys.exit(1)
+        if sub == "add":
+            try:
+                entry = trust_add_key(extra[0], name=getattr(args, "name", "") or None)
+            except (OSError, ValueError) as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(json.dumps(entry, indent=2) if as_json else f"Trusted key {entry['key_id']} ({entry['name']})")
+            return
+        if sub == "remove":
+            removed = trust_remove_key(extra[0])
+            if as_json:
+                print(json.dumps({"key_id": extra[0], "removed": removed}, indent=2))
+            else:
+                print(f"Removed trusted key {extra[0]}" if removed else f"Key id {extra[0]} not in registry")
+            if not removed:
+                sys.exit(1)
+            return
+        print("Error: `evr trust` sub-command must be add, list, or remove.", file=sys.stderr)
+        sys.exit(1)
 
     def _exit_if_unverified(summ: dict[str, Any]) -> None:
         # Post-write verification failed: the CLI must not report success.
@@ -3733,6 +3988,10 @@ def cmd_evr(args: argparse.Namespace) -> None:
     if action == "verify":
         verify_key = resolve_evr_sign_key(sign_key, fallback_demo=False)
         with EvrReader(evr_path) as reader:
+            if verify_key is None:
+                hit = lookup_trusted_key(reader.signer_key_id())
+                if hit is not None:
+                    verify_key = hit[0]
             ver = reader.verify(sign_key=verify_key)
             is_signed = bool(reader.flags & int(EvrFlags.SIGNED))
         if is_signed and verify_key is None:
@@ -3745,6 +4004,13 @@ def cmd_evr(args: argparse.Namespace) -> None:
             if getattr(args, "require_signature", False):
                 ver["valid"] = False
                 ver["errors"].append("Signature required (--require-signature) but no verification key available")
+        if getattr(args, "require_trusted", False) and not str(ver.get("signature_trust") or "").startswith(
+            "trusted-key:"
+        ):
+            ver["valid"] = False
+            ver["errors"].append(
+                f"Trusted signer required (--require-trusted) but signature_trust={ver.get('signature_trust')}"
+            )
         if getattr(args, "rust", False):
             ver["rust_interop"] = verify_rust_evr_interop(evr_path)
             if not ver["rust_interop"].get("valid", False):
@@ -3761,6 +4027,10 @@ def cmd_evr(args: argparse.Namespace) -> None:
                 print(f"  HMAC-SHA256 Signature   : {ver['signature_verified']}")
                 if ver.get("signature_trust"):
                     print(f"  Signature Trust         : {ver['signature_trust']}")
+            if ver.get("signer_key_id"):
+                print(
+                    f"  Signer Key Id           : {ver['signer_key_id']} ({ver.get('signer_name') or 'unregistered'})"
+                )
             if "rust_interop" in ver:
                 print(f"  Native Rust Kernel      : {'PASS' if ver['rust_interop'].get('valid') else 'FAIL'}")
             for err in ver["errors"]:

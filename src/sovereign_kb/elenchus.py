@@ -3177,8 +3177,8 @@ def synthesize_elenchus_verdict(
             item["ngrams"] = _extract_ngrams_2_3(f"{f['claim']} {f['evidence']}")
             flat_items.append(item)
 
-    # Synthesize split/challenge clusters over verified non-failed LLM reviewers; failed non-deterministic
-    # reviewers always inject CHALLENGE so failures never silently become READY_UNANIMOUS.
+    # Synthesize split/challenge clusters over verified non-failed LLM reviewers; any failed reviewer
+    # (including a failed deterministic probe) injects CHALLENGE so failures never become READY_UNANIMOUS.
     llm_reviews = [
         r
         for r in normalized_reviews
@@ -3187,7 +3187,7 @@ def synthesize_elenchus_verdict(
     llm_verdicts = [
         "CHALLENGE" if r["execution_status"] == "FAILED" else r["verdict"]
         for r in normalized_reviews
-        if r["lineage"] != "deterministic"
+        if r["lineage"] != "deterministic" or r["execution_status"] == "FAILED"
     ]
     has_split_verdict = ("APPROVE" in [r["verdict"] for r in llm_reviews]) and any(
         r["verdict"] in ("CHALLENGE", "VETO") for r in llm_reviews
