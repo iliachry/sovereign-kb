@@ -420,6 +420,9 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
       --oi-amber: light-dark(#E69F00, #fbbf24);
       --oi-purple: light-dark(#CC79A7, #f472b6);
       --oi-sky: light-dark(#56B4E9, #60a5fa);
+      /* Text-safe status colours: Okabe-Ito hues darkened for >= 4.5:1 on light surfaces */
+      --ok-fg: light-dark(#00704f, #34d399);
+      --warn-fg: light-dark(#a04600, #fb923c);
 
       --scrollbar-track: light-dark(#e2e8f0, #0f172a);
       --scrollbar-thumb: light-dark(#94a3b8, #334155);
@@ -452,11 +455,12 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
       inset-block-start: 0;
       z-index: 40;
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
       justify-content: space-between;
-      gap: 0.75rem 1.25rem;
-      padding: 0.75rem 1.5rem;
+      gap: 0.75rem;
+      padding: 0.25rem 1.5rem;
+      min-block-size: 3.5rem;
       background: var(--bg-glass);
       backdrop-filter: blur(12px);
       border-block-end: 1px solid var(--border-subtle);
@@ -465,14 +469,17 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
     .brand-group {{
       display: flex;
       align-items: center;
-      gap: 0.85rem;
-      flex-wrap: wrap;
+      gap: 0.75rem;
+      flex-wrap: nowrap;
+      min-inline-size: 0;
     }}
 
     .brand-logo {{
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
+      white-space: nowrap;
+      min-inline-size: 0;
       font-weight: 700;
       font-size: 1.05rem;
       letter-spacing: -0.02em;
@@ -493,8 +500,105 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
     .header-controls {{
       display: flex;
       align-items: center;
-      gap: 0.65rem;
-      flex-wrap: wrap;
+      gap: 0.5rem;
+      flex-wrap: nowrap;
+      min-inline-size: 0;
+    }}
+
+    .brand-name {{
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-inline-size: 0;
+    }}
+
+    #vault-select {{
+      max-inline-size: 11rem;
+      min-inline-size: 4.5rem;
+      flex: 0 1 auto;
+    }}
+
+    .sr-only {{
+      position: absolute;
+      inline-size: 1px;
+      block-size: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }}
+
+    /* Gate summary: 6 gate pills behind one disclosure (Laws L1 + L6) */
+    .gate-summary {{
+      position: relative;
+    }}
+
+    .gate-summary > summary {{
+      list-style: none;
+      cursor: pointer;
+      min-block-size: 2.75rem;
+      white-space: nowrap;
+    }}
+
+    .gate-summary > summary::-webkit-details-marker {{
+      display: none;
+    }}
+
+    .gate-summary[open] > .gate-strip {{
+      position: absolute;
+      inset-block-start: calc(100% + 0.4rem);
+      inset-inline-start: 0;
+      z-index: 50;
+      inline-size: max-content;
+      max-inline-size: min(22rem, 90vw);
+      padding: 0.6rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 0.75rem;
+    }}
+
+    @media (max-width: 900px) {{
+      .brand-badge,
+      .btn-label {{
+        display: none;
+      }}
+
+      .header-controls button {{
+        min-inline-size: 2.75rem;
+        padding-inline: 0.5rem;
+      }}
+    }}
+
+    @media (max-width: 640px) {{
+      .top-bar {{
+        padding-inline: 0.75rem;
+        gap: 0.4rem;
+      }}
+
+      .brand-group {{
+        gap: 0.4rem;
+      }}
+
+      .brand-suffix,
+      .gate-label {{
+        display: none;
+      }}
+
+      .brand-logo {{
+        font-size: 0.95rem;
+        flex: 1 1 auto;
+      }}
+
+      .brand-group {{
+        flex: 1 1 auto;
+      }}
+
+      .header-controls {{
+        gap: 0.35rem;
+      }}
+
+      .header-controls button {{
+        min-inline-size: 2.75rem;
+        padding-inline: 0.5rem;
+      }}
     }}
 
     select, input[type="text"], input[type="search"], button {{
@@ -505,11 +609,13 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
       border: 1px solid var(--border-strong);
       border-radius: 0.5rem;
       padding: 0.4rem 0.7rem;
+      min-block-size: 2.75rem;
     }}
 
     button {{
       cursor: pointer;
       font-weight: 600;
+      white-space: nowrap;
       transition: background-color 120ms ease, border-color 120ms ease;
     }}
 
@@ -536,12 +642,12 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
     }}
 
     .status-pill.pass {{
-      color: var(--oi-green);
+      color: var(--ok-fg);
       border-color: var(--oi-green);
     }}
 
     .status-pill.warn {{
-      color: var(--oi-orange);
+      color: var(--warn-fg);
       border-color: var(--oi-orange);
     }}
 
@@ -911,16 +1017,19 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
   <header class="top-bar">
     <div class="brand-group">
       <div class="brand-logo">
-        <span>⚡ Sovereign-KB Telemetry</span>
+        <span class="brand-name">⚡ Sovereign-KB<span class="brand-suffix"> Telemetry</span></span>
         <span class="brand-badge mono">v1.4.0 Zero-Dep</span>
       </div>
-      <div id="gate-strip" class="gate-strip"></div>
+      <details class="gate-summary">
+        <summary id="gate-summary-pill" class="status-pill pass mono" aria-label="6-Gate status, show details">Gates</summary>
+        <div id="gate-strip" class="gate-strip"></div>
+      </details>
     </div>
     <div class="header-controls">
-      <label for="vault-select" class="kpi-label" style="margin-inline-end:0.2rem;">Vault:</label>
+      <label for="vault-select" class="sr-only">Vault</label>
       <select id="vault-select" aria-label="Select Sovereign Vault"></select>
-      <button id="refresh-btn" type="button" title="Refresh live telemetry">↻ Refresh</button>
-      <button id="theme-toggle" type="button" aria-label="Toggle color scheme">◐ Theme</button>
+      <button id="refresh-btn" type="button" title="Refresh live telemetry" aria-label="Refresh live telemetry">↻<span class="btn-label"> Refresh</span></button>
+      <button id="theme-toggle" type="button" title="Toggle color scheme" aria-label="Toggle color scheme">◐<span class="btn-label"> Theme</span></button>
     </div>
   </header>
 
@@ -1164,7 +1273,7 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
         document.getElementById("kpi-cache-sub").textContent = "No agent logs in window";
       }} else {{
         cacheEl.textContent = `${{eta.toFixed(1)}}%`;
-        cacheEl.style.color = eta >= 90.0 ? "var(--oi-green)" : "var(--oi-orange)";
+        cacheEl.style.color = eta >= 90.0 ? "var(--ok-fg)" : "var(--warn-fg)";
         document.getElementById("kpi-cache-sub").textContent = eta >= 90.0
           ? "PASS (≥ 90.0% cache read ratio)"
           : "BELOW 90.0% cache guardrail";
@@ -1180,6 +1289,10 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
         const cls = item.status === "PASS" ? "pass" : "warn";
         return `<span class="status-pill ${{cls}} mono" title="${{esc(item.name)}}">${{esc(item.id)}}: ${{esc(item.status)}}</span>`;
       }}).join("");
+      const gPass = g.items.filter(item => item.status === "PASS").length;
+      const gSum = document.getElementById("gate-summary-pill");
+      gSum.innerHTML = `${{gPass === g.items.length ? "✓" : "!"}}<span class="gate-label"> Gates</span> ${{gPass}}/${{g.items.length}}`;
+      gSum.className = `status-pill ${{gPass === g.items.length ? "pass" : "warn"}} mono`;
 
       const sel = document.getElementById("vault-select");
       sel.innerHTML = (SNAPSHOT.vaults || []).map(vl => {{
@@ -1369,7 +1482,7 @@ def render_dashboard_html(snapshot: dict[str, Any], live_server: bool = False) -
               <th class="mono">${{esc(e.cycle_id)}}</th>
               <td class="mono">${{jb}} → ${{ja}}</td>
               <td class="mono">${{mrr}} / ${{rec}}</td>
-              <td class="mono" style="color:var(--oi-green); font-weight:700;">${{dj >= 0 ? "+" : ""}}${{dj.toFixed(5)}}</td>
+              <td class="mono" style="color:var(--ok-fg); font-weight:700;">${{dj >= 0 ? "+" : ""}}${{dj.toFixed(5)}}</td>
               <td class="mono" title="${{esc(e.entry_hash)}}">${{esc(hashShort)}}</td>
             </tr>
           `;

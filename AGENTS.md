@@ -24,10 +24,20 @@
 
 ---
 
+## 🪪 Identity, Palette & GWI Lens Scope
+
+- **Names**: product and PyPI package `sovereign-kb` (v1.4.0, MIT, author Ilias Chrysovergis); CLI entrypoints `sovereign-kb` / `skb` (full CLI), `gwi` (quality gate), `organon` (4-pillar front door), `evr` (`.evr` format). The dashboard title is "Sovereign-KB Telemetry".
+- **Palette (dashboard)**: light/dark via `light-dark()` tokens in `src/sovereign_kb/dashboard.py`; data colours use the Okabe-Ito colour-blind-safe set (`--oi-*`); status text uses the darkened `--ok-fg` / `--warn-fg` tokens (>= 4.5:1). Light is the default polarity; no sibling product to inherit from (Law L0 not applicable).
+- **Active GWI lenses** (`gwi lenses .`): `ux-ergonomics` (the `skb dashboard` HTML UI), `principal-verification`, `science-integrity`. Not applicable: `technical-artist` (no 3D assets), `spatial-cinema` (no shipped video/audio), `typography-editor` (no LaTeX/PDF), `web-perf-edge` (no JS bundle or npm deps; inline dashboard JS only), `data-api-architect` (local SQLite only, no RLS/HTTP API contract), `ai-ml-science` (no model training; local embeddings are optional).
+- **Browser evidence**: `uv run --with playwright==1.58.0 python scripts/audit_dashboard.py` writes `evidence/playwright/report.json` and `evidence/dashboard_3viewport_sheet.png` (gitignored). Re-run it after any `dashboard.py` change; `scripts/quality_gate.sh` Stage 6 refuses stale evidence.
+
+---
+
 ## ⚡ Standard Verification Commands
 
 ```bash
 ./scripts/quality_gate.sh
+QG_BROWSER=1 ./scripts/quality_gate.sh   # also regenerate dashboard browser evidence
 ```
 
 ---

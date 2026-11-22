@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -987,7 +988,11 @@ def test_gwi_tri_council_all_12_counterexamples(tmp_path: Path, capsys: pytest.C
     # 4. Counterexample #4: `sovereign-kb` self-audit inspects `dashboard.py` `light-dark(...)` tokens in `ux-ergonomics`
     skb_self = evaluate_target(REPO_ROOT, profile="app")
     ux_lens = next(lens for lens in skb_self["craft_lenses"]["lenses"] if lens["id"] == "ux-ergonomics")
-    assert any("ux.wcag_contrast_tap" in pf and "16.21:1" in pf for pf in ux_lens["probe_findings"])
+    # Holds with or without gitignored browser evidence: the finding always reports the CSS token pairs.
+    contrast = [pf for pf in ux_lens["probe_findings"] if pf.startswith("PASS [ux.wcag_contrast_tap]")]
+    assert contrast and "CSS token pair" in contrast[0]
+    ratios = [float(r) for r in re.findall(r"(\d+\.\d+):1", contrast[0])]
+    assert ratios and min(ratios) >= 4.5
 
     # 5. Counterexample #5: Corrupt 0-byte `a3viewport_sheet.png` triggers hard VETO
     corrupt_sheet_app = tmp_path / "corrupt-sheet-app"

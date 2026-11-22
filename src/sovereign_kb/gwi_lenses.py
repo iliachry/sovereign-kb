@@ -305,7 +305,8 @@ def _lens_ux_ergonomics(ctx: SimpleNamespace) -> None:
                     f", worst-pixel = {runtime_worst_pixel_cr}:1, white-backdrop bound = {runtime_white_bound_cr}:1"
                 )
             probe_findings.append(
-                f"PASS [ux.wcag_contrast_tap]: Verified live WebGL-sampled HUD min contrast = {runtime_wcag_cr}:1"
+                f"PASS [ux.wcag_contrast_tap]: Verified runtime min text contrast = {runtime_wcag_cr}:1"
+                f" (from `{pw_reports[0].relative_to(root)}`)"
                 f"{extra_bounds} and {wcag_res['checked_pairs']} CSS token pair(s) (min token contrast = {css_min_cr}:1, >= 4.5:1)"
             )
         else:
