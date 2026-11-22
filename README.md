@@ -1,47 +1,34 @@
-# Sovereign-KB & The Sovereign Organon (`skb` · `gwi` · `evr` · `organon`)
+# Sovereign-KB (`skb`)
 
-**Local-first Markdown memory, mathematical quality gating (`G >= 9.0`), and cryptographic artifact capsules for engineers and AI coding agents.**
+**AI coding agents forget every decision the moment a chat ends, and your own notes end up scattered across tools. `skb` gives you both a searchable memory built from plain Markdown files you own.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](pyproject.toml)
 [![Runtime Dependencies: 0](https://img.shields.io/badge/Runtime_Dependencies-0_(Pure_Stdlib)-success.svg)](pyproject.toml)
-[![Organon Architecture: Open-Core](https://img.shields.io/badge/Organon-Open--Core_(MIT)-D4A359.svg)](https://goldwood.tech/organon)
 
-Point `skb` at any folder of `.md` files—or initialize a fresh vault in one command. Capture architectural decisions from your terminal, search across your notes by keyword + `[[wikilinks]]` + optional local embeddings, audit repositories against the **Goldwood Index (`gwi` — `G >= 9.0`)**, seal deliverables into zero-copy **`.evr` cryptographic capsules**, and drive the unified **`organon`** loop across your AI coding agents (`Claude Code`, `Cursor`, `OpenCode`, `Codex`).
+## Quick start
 
-Everything runs locally on **Python 3.10+ standard library + SQLite FTS5** with **zero runtime dependencies**. Delete `.kb/` at any time and your plain Markdown files remain untouched.
+```bash
+uv tool install git+https://github.com/iliachry/sovereign-kb.git
+skb init ~/notes --no-embed --save-default
+skb capture "We chose SQLite FTS5 because the app must work offline."
+skb search "SQLite offline"   # prints the matching passage with its file path and line numbers
+```
+
+## What it does
+
+- **Captures decisions where you work**: `skb capture "..."` appends a timestamped entry to `04-episodic/`, from your terminal or your agent.
+- **Finds them again in one command**: keyword (BM25) + `[[wikilink]]` graph + optional local embeddings, returning the exact file and line numbers.
+- **Built for AI coding agents**: `--json` output and a three-line `AGENTS.md` snippet for Claude Code, Cursor, OpenCode and Codex.
+- **Works on notes you already have**: point `--vault` at an Obsidian vault or a `docs/` folder; nothing is rewritten.
+- **Zero dependencies, fully offline**: Python 3.10+ standard library + SQLite FTS5. Delete `.kb/` and your Markdown stays untouched.
+- **Optional extras**: a repository quality gate (`gwi`) and signed `.evr` artifact capsules, part of the [Sovereign Organon](#sovereign-organon).
 
 ![skb 60-Second Quickstart](docs/assets/quickstart.svg)
 
 ---
 
-## 🏛️ The Sovereign Organon (`organon` — Open-Core Architecture)
-
-**The Sovereign Organon** ($\text{Ὄργανον}$ — *Memory · Machine · Measure · Trust*) is [Goldwood Technologies'](https://goldwood.tech/organon) closed-loop autonomous engineering architecture. This repository ships the **MIT Open-Core foundation** (`skb`, `gwi`, `evr`, `organon`), while the multi-node autonomous delivery orchestrator (`swm`) operates as the proprietary Goldwood Studio Engine:
-
-| Pillar | Classical Epithet | CLI Entrypoint | Role | Edition |
-| :--- | :--- | :--- | :--- | :---: |
-| **1. Memory** | *Episteme* ($\text{Ἐπιστήμη}$) | `skb` / `organon kb` | 4-Way Hybrid Markdown Memory, Soar 9.6 symbolic chunking & 4-Loop RSI | **MIT (Included)** |
-| **2. Machine** | *Techne* ($\text{Τέχνη}$) | `organon swm` | 6-Stage Autonomous Software Factory, worktree builder & adversarial auditor | *Goldwood Studio* |
-| **3. Measure** | *Phronesis* ($\text{Φρόνησις}$) | `gwi` / `organon audit` | Non-linear Goldwood Index (`G >= 9.0`), 8 Craft Lenses & Laws `L0`–`L9` gate | **MIT (Included)** |
-| **4. Trust** | *Pistis* ($\text{Πίστις}$) + `.evr` | `organon chain` / `evr` | RFC 6962 Merkle proofs, 7-state bilateral licensing FSM & `.evr` zero-copy capsules | **MIT (Included)** |
-
-```bash
-# Inspect live 4-pillar Organon status and interactive workflow commandbook
-organon status
-organon showcase
-
-# Audit any software repo, 3D simulation, LaTeX paper, or walkthrough video against G(S) >= 9.0
-organon audit .
-```
-
----
-
 ## 💡 Why `skb`?
-
-- **Decisions disappear into chat history**: When you or your coding agent solve a tricky bug or make an architectural trade-off, `skb capture "..."` appends a timestamped Markdown entry to `04-episodic/` (auto-indexed on your next `search`, `status`, or `verify`, or immediately with `--sync`).
-- **New agent sessions start with amnesia**: Instead of re-explaining your stack and past decisions in every chat, your agent runs `skb search "<topic>" --json` (or `skb me`) and retrieves the exact passage and file path.
-- **Zero-dependency, local-first durability**: No Docker containers, no cloud vector accounts, and no heavy Python dependency trees.
 
 | Capability | `ripgrep` (`rg`) | GUI Note Apps (Obsidian) | Cloud / Docker RAG | **`sovereign-kb` (`skb`)** |
 | :--- | :---: | :---: | :---: | :---: |
@@ -53,7 +40,7 @@ organon audit .
 
 ---
 
-## ⚡ Try It in 60 Seconds (Works 100% Offline)
+## ⚡ Step-by-Step Walkthrough (Works 100% Offline)
 
 ### 1. Install via `uv` (or `pipx`)
 
@@ -165,6 +152,30 @@ skb dashboard --export
 | Run Pistis On-Chain Bilateral Negotiation, RFC 6962 Merkle Anchor, PhD Tokenomics & Software Aristocracy (`skb chain` / `organon chain`) | `organon chain full-suite` |
 | Pack, inspect, search, query via SQL, zero-copy `mmap` tensors, Merkle-verify, and seal GWI/Paper/Vault/Show/Twin `.evr` ("Everything" v1.0) capsules (`evr`, `skb evr`, `organon evr`, `evr seal-gwi --require-elenchus`, `evr seal-paper`, `evr pack-vault`, `evr pack-show`, `evr pack-twin`, `skb gwi audit --seal --require-elenchus`) | `evr bench` |
 | Generate a 0600 `.evr` signing key, register trusted signers, seal with `--key-file`, and require a registry-trusted signature (`evr keygen --name NAME [--out PATH] [--print-key]`, `evr trust add <keyfile> [--name]`, `evr trust list`, `evr trust remove <key_id>`, `evr verify --require-trusted`) | `evr keygen --name me` |
+
+---
+
+<a id="sovereign-organon"></a>
+
+## 🏛️ The Sovereign Organon (`organon` — Open-Core Architecture)
+
+**The Sovereign Organon** ($\text{Ὄργανον}$ — *Memory · Machine · Measure · Trust*) is [Goldwood Technologies'](https://goldwood.tech/organon) closed-loop autonomous engineering architecture. This repository ships the **MIT Open-Core foundation** (`skb`, `gwi`, `evr`, `organon`), while the multi-node autonomous delivery orchestrator (`swm`) operates as the proprietary Goldwood Studio Engine:
+
+| Pillar | Classical Epithet | CLI Entrypoint | Role | Edition |
+| :--- | :--- | :--- | :--- | :---: |
+| **1. Memory** | *Episteme* ($\text{Ἐπιστήμη}$) | `skb` / `organon kb` | 4-Way Hybrid Markdown Memory, Soar 9.6 symbolic chunking & 4-Loop RSI | **MIT (Included)** |
+| **2. Machine** | *Techne* ($\text{Τέχνη}$) | `organon swm` | 6-Stage Autonomous Software Factory, worktree builder & adversarial auditor | *Goldwood Studio* |
+| **3. Measure** | *Phronesis* ($\text{Φρόνησις}$) | `gwi` / `organon audit` | Non-linear Goldwood Index (`G >= 9.0`), 8 Craft Lenses & Laws `L0`–`L9` gate | **MIT (Included)** |
+| **4. Trust** | *Pistis* ($\text{Πίστις}$) + `.evr` | `organon chain` / `evr` | RFC 6962 Merkle proofs, 7-state bilateral licensing FSM & `.evr` zero-copy capsules | **MIT (Included)** |
+
+```bash
+# Inspect live 4-pillar Organon status and interactive workflow commandbook
+organon status
+organon showcase
+
+# Audit any software repo, 3D simulation, LaTeX paper, or walkthrough video against G(S) >= 9.0
+organon audit .
+```
 
 ---
 
