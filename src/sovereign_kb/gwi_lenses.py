@@ -1829,6 +1829,11 @@ def _lens_principal_verification(ctx: SimpleNamespace) -> None:
     ctx.score = score
     ctx.veto_triggered = veto_triggered
 
+    # Probes 6-9: antifragility (`af.*`) — gains from stress, never credited for mere robustness.
+    from sovereign_kb.gwi_antifragility import apply_antifragility_probes
+
+    apply_antifragility_probes(ctx)
+
 
 def _lens_science_integrity(ctx: SimpleNamespace) -> None:
     probe_findings = ctx.probe_findings

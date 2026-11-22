@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from sovereign_kb import frontier_organon as fo
-from sovereign_kb import rust_cert, video_playback
+from sovereign_kb import gwi_rigor, rust_cert, video_playback
 
 # --------------------------------------------------------------------------------------------------
 # 1. Mutation probe must refuse a target reached through a symlinked parent directory
@@ -54,7 +54,8 @@ def test_mutation_probe_counts_collection_error_as_killed(tmp_path: Path, monkey
         rc = 0 if len(calls) == 1 else 2  # baseline passes, every mutant breaks collection
         return subprocess.CompletedProcess(cmd, rc, "", "")
 
-    monkeypatch.setattr(fo.subprocess, "run", fake_run)
+    monkeypatch.setattr(gwi_rigor, "select_test_python", lambda root: "python3")
+    monkeypatch.setattr(gwi_rigor.subprocess, "run", fake_run)
     res = fo.run_ast_mutation_probe(tmp_path, target_rel_path="mod.py", max_mutants=2)
     assert res["mutants_tested"] >= 1
     assert res["mutants_survived"] == 0
@@ -67,7 +68,8 @@ def test_mutation_probe_baseline_collection_error_is_not_scored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "mod.py").write_text("def f(a, b):\n    return a + b\n", encoding="utf-8")
-    monkeypatch.setattr(fo.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 2, "", ""))
+    monkeypatch.setattr(gwi_rigor, "select_test_python", lambda root: "python3")
+    monkeypatch.setattr(gwi_rigor.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 2, "", ""))
     res = fo.run_ast_mutation_probe(tmp_path, target_rel_path="mod.py", max_mutants=2)
     assert res["status"] == "BASELINE_FAILED"
     assert res["mutants_killed"] == 0

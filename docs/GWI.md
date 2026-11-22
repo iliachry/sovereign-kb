@@ -25,7 +25,7 @@ $$\mathcal{G}(\mathbf{S}) = \left( \sum_{i=1}^4 \alpha_i \mathcal{S}_i \right) \
 | **`web-perf-edge`** | *Chrysos* | `wp.barrel_waterfalls` (no wildcard icon-library imports), `wp.listener_memory_hygiene`, `wp.edge_bundle_budget` ($\le 2.5\text{ MB}$) | Barrel `import * as` from `lucide-react` / `@mui/icons-material` / `@heroicons/react` | — |
 | **`data-api-architect`** | *Chrysos* | `da.destructive_sql_guard` (no unguarded `DROP`/`DELETE`), `da.rls_index_hygiene`, `da.api_contract_schema` | Unguarded `DELETE FROM x;` or `DISABLE ROW LEVEL SECURITY` | — |
 | **`ai-ml-science`** | *Chrysos* | `ai.deterministic_seeds` (no legacy `google.generativeai`), `ai.gx10_cluster_guard`, `ai.reproducible_artifacts` | Legacy `google.generativeai` import or unconfirmed cluster service stop/restart | — |
-| **`principal-verification`** | *Chrysos* (all profiles) | `pv.lockfile_reproducibility`, `pv.secret_hygiene`, `pv.skill_manifest_binding`, `pv.canonical_anchor_l9` (Law `L9`), `pv.readme_doc_freshness` | Leaked token, missing `SKILL.md`, unanchored sprawl repo, or broken `README.md` paths/commands | `AGENTS.md` skill matrix |
+| **`principal-verification`** | *Chrysos* (all profiles) | `pv.lockfile_reproducibility`, `pv.secret_hygiene`, `pv.skill_manifest_binding`, `pv.canonical_anchor_l9` (Law `L9`), `pv.readme_doc_freshness`; antifragility `af.failure_to_gate`, `af.rule_retirement`, `af.stress_evidence`, `af.barbell_isolation` (WARN only, see below) | Leaked token, missing `SKILL.md`, unanchored sprawl repo, or broken `README.md` paths/commands | `AGENTS.md` skill matrix |
 
 ### Knowledge Base Profile (`--profile kb`, Weights $\alpha = (0.25, 0.20, 0.30, 0.25)$)
 Auto-selected whenever a target contains `.kb/index.db` or sovereign taxonomy directories (`00-identity/`, `01-now/`, `02-operating-system/`, `03-life-domains/`, `04-episodic/`):
@@ -34,6 +34,18 @@ Auto-selected whenever a target contains `.kb/index.db` or sovereign taxonomy di
 - **Tier III ($\mathcal{S}_{\text{act}}$ / *Utilitas* — $w = 0.30$)**: `U_links` ($0.15$: 100% `[[wikilink]]` resolution and average degree) and `D_topo` ($0.15$: 100% Largest Connected Component $\text{LCC} = 1.0$, 2-hop hub reachability from `INDEX.md`, and positive normalized Laplacian Fiedler algebraic connectivity $\lambda_2(L_{\text{sym}}) > 0$ catching isolated cycles).
 - **Tier IV ($\mathcal{S}_{\text{exist}}$ / *Syneidesis* — $w = 0.25$)**: `B_tier0` ($0.15$: Tier-0 taxonomy completeness, dated episodic logs, and `.kb/rsi-ledger.jsonl` SHA-256 hash chain) and `R_prov` ($0.10$: secret hygiene and `SKILL.md` manifest integrity).
 
+
+### Antifragility Probes (`af.*`, in `principal-verification`)
+Antifragile means a repository gets *stronger* from stress; fail-closed gates, rollback and non-regression checks are robustness and earn no credit here. All four probes are measured from git history or files on disk (`src/sovereign_kb/gwi_antifragility.py`). They emit `WARN` (a fixed score deduction, never a veto) or `INFO` when they do not apply.
+
+| Probe | Measures | `WARN` when | Deduction |
+| :--- | :--- | :--- | :--- |
+| `af.failure_to_gate` | Share of `fix` commits (last 365 days) that touch a test file in the same commit, or are named in a `Regression-test-for: <sha>` trailer on a later commit that touches a test file | `< 50%` with at least 3 fix commits | `0.6` |
+| `af.rule_retirement` | Whole-token rule IDs such as `GWI-SIM-U01` (outside `tests/`) added vs. retired since the commit 180 days ago, or the root commit | `>= 5` added and `0` retired | `0.4` |
+| `af.stress_evidence` | Property/fuzz tests (`hypothesis`, `proptest`, `fast-check`, `kani`, `cargo-fuzz`) or mutation-testing config/results (`mutmut`, `stryker`, `cargo-mutants`); detected, not executed | Test files exist but none of the above | `0.5` |
+| `af.barbell_isolation` | Python imports (including lazy ones) from modules listed in `[tool.gwi.barbell] core` into modules listed in `experimental` (`pyproject.toml`, Python 3.11+) | Any such import | `0.6` |
+
+To backfill a regression test for an old fix, commit the test with one trailer per fix, e.g. `Regression-test-for: 0bc7ae3`. The `GWI-SCI-06`/`GWI-SCI-07` rigor and formal-proof checks live in core `src/sovereign_kb/gwi_rigor.py`; `frontier_organon` re-exports them.
 
 Lens evaluators live in `src/sovereign_kb/gwi_lenses.py` (`LENS_EVALUATORS`, one `_lens_<id>` function per lens); `gwi.evaluate_craft_lenses` handles activation, the strict caps, and pole coupling.
 

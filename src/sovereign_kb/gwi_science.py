@@ -1092,7 +1092,7 @@ def check_web_security(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
 
 def audit_science_integrity(target: Path, profile: str = "app", run_collect: bool = False) -> dict[str, Any]:
     """Run all `GWI-SCI-*` probes on a repository directory (or the parent directory of a file target)."""
-    from sovereign_kb.frontier_organon import check_formal_proofs, check_property_and_mutation_rigor
+    from sovereign_kb.gwi_rigor import check_formal_proofs, check_property_and_mutation_rigor
 
     resolved = target.expanduser().resolve()
     root = resolved if resolved.is_dir() else resolved.parent

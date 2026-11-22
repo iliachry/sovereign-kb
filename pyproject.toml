@@ -65,6 +65,11 @@ evr = "sovereign_kb.evr:main_cli"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sovereign_kb"]
 
+[tool.gwi.barbell]
+# Antifragility barbell (`af.barbell_isolation`): the gate core must not import experimental engines.
+core = ["gwi", "gwi_core", "gwi_lenses", "gwi_science", "gwi_antifragility", "gwi_rigor", "kb_check", "readme_check", "retrieval", "rsi"]
+experimental = ["chain", "organon", "frontier_organon"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
