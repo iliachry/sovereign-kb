@@ -299,6 +299,24 @@ def test_rsi_heal_tolerance_strict_when_no_files_written(rsi_harness) -> None:
     assert note.read_text(encoding="utf-8") == "healed\n"
 
 
+def test_rsi_heal_tolerance_also_covers_heldout_dip(rsi_harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression for 0c5f1d5: the heal tolerance applies to heldout_delta_j, not only delta_j_heal."""
+    vault, run = rsi_harness
+    held = [{"query": "h", "expected": "y.md"}]
+    monkeypatch.setattr(rsi, "split_benchmark_suite", lambda conn, v, probes=None: (probes, held))
+    note = vault / "n.md"
+    note.write_text("healed\n", encoding="utf-8")
+    busy = rsi._SnapshotMap({note: "orig\n"})
+    busy.written[note] = "healed\n"
+    # before, before_heldout, after_heal, after, after_heldout: only the held-out score dips by 1e-4.
+    rep = run(lambda **k: _heal_result(busy), [1.0, 1.0, 1.0, 1.0, 0.9999])
+    assert rep["status"] != "ROLLED_BACK_ON_REGRESSION"
+
+    idle = rsi._SnapshotMap({vault / "INDEX.md": None})
+    rep = run(lambda **k: _heal_result(idle), [1.0, 1.0, 1.0, 1.0, 0.9999])
+    assert rep["status"] == "ROLLED_BACK_ON_REGRESSION"
+
+
 def test_rsi_cycle_rollback_preserves_concurrent_user_edit(rsi_harness) -> None:
     vault, run = rsi_harness
     mine, theirs = vault / "mine.md", vault / "theirs.md"
