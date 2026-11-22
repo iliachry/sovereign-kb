@@ -418,6 +418,7 @@ def test_elenchus_adjudication_fsm_law_l10_and_evr_sealing_gate_f20(tmp_path: Pa
         reason="Upstream input validator already rejects non-finite IEEE floats before safe_ratio",
         adjudicator="ilias",
         ledger_file=swm_home / "ledger.jsonl",
+        override=True,
     )
     ready = adjudicate_elenchus_finding(
         repo_dir,

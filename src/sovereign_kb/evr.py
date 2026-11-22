@@ -60,6 +60,36 @@ EVR_MAGIC_START = b"EVR\x01"
 EVR_MAGIC_RESERVED = b"EVR!"
 EVR_MAGIC_END = b"1RVE"
 EVR_ALIGNMENT = 64
+# Publicly known demo HMAC key: kept for backwards-compatible demos/tests, never a trust signal.
+EVR_PUBLIC_DEMO_SIGN_KEY = "sovereign-evr-v1-key"
+EVR_SIGN_KEY_ENV = "SKB_EVR_SIGN_KEY"
+
+
+def _current_umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+def resolve_evr_sign_key(sign_key: str | None = None, *, fallback_demo: bool = True) -> str | None:
+    """Resolve the HMAC key: explicit `sign_key` > env `SKB_EVR_SIGN_KEY` > public demo key (if allowed)."""
+    if sign_key:
+        return sign_key
+    env_key = os.environ.get(EVR_SIGN_KEY_ENV, "").strip()
+    if env_key:
+        return env_key
+    return EVR_PUBLIC_DEMO_SIGN_KEY if fallback_demo else None
+
+
+def _resolve_seal_key(sign_key: str | None) -> str:
+    key = resolve_evr_sign_key(sign_key) or EVR_PUBLIC_DEMO_SIGN_KEY
+    if key == EVR_PUBLIC_DEMO_SIGN_KEY:
+        print(
+            "Warning: .evr capsule signed with the PUBLIC demo key — not a trust signal; set SKB_EVR_SIGN_KEY",
+            file=sys.stderr,
+        )
+    return key
+
 
 # 64-byte Superblock:
 # magic(4s), ver_major(H), ver_minor(H), flags(I), alignment(I),
@@ -1682,10 +1712,22 @@ table.data-table th {{ background: var(--bg); font-weight: 600; }}
         out_path = Path(path).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         blob = self.build_bytes()
-        out_path.write_bytes(blob)
-        if make_executable or (make_executable is None and self.polyglot):
-            mode = out_path.stat().st_mode
-            out_path.chmod(mode | 0o111)
+        # Atomic write: temp file in the same directory, then os.replace().
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{out_path.name}.", suffix=".tmp", dir=str(out_path.parent))
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(blob)
+                fh.flush()
+                os.fsync(fh.fileno())
+            mode = 0o666 & ~_current_umask()
+            if make_executable or (make_executable is None and self.polyglot):
+                mode |= 0o111
+            tmp_path.chmod(mode)
+            os.replace(tmp_path, out_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
         return out_path
 
 
@@ -1899,9 +1941,10 @@ class EvrReader:
         if codec_id == int(EvrCodec.ZLIB):
             dobj = zlib.decompressobj()
             raw = dobj.decompress(stored, r_len + 1)
-            if dobj.unconsumed_tail or len(dobj.flush(1)) > 0 or not dobj.eof or len(raw) != r_len:
+            if dobj.unconsumed_tail or len(dobj.flush(1)) > 0 or not dobj.eof or dobj.unused_data or len(raw) != r_len:
                 raise ValueError(
-                    f"Chunk #{idx} ({meta['path']}) decompression length mismatch (expected {r_len} bytes)"
+                    f"Chunk #{idx} ({meta['path']}) decompression length mismatch or trailing bytes "
+                    f"after zlib stream (expected {r_len} bytes)"
                 )
         else:
             raw = stored
@@ -2019,6 +2062,15 @@ class EvrReader:
             errors.append(f"Manifest chunk count {len(self.chunks)} != superblock chunk_count {self.chunk_count}")
         if self._duplicate_paths:
             errors.append(f"Duplicate chunk paths detected: {sorted(set(self._duplicate_paths))}")
+        # Distinct payload ranges must not overlap (identical ranges = legitimate content dedup).
+        ranges = sorted(
+            {(int(bt["data_offset"]), int(bt["stored_len"])) for bt in self.binary_toc if int(bt["stored_len"]) > 0}
+        )
+        for (a_off, a_len), (b_off, b_len) in zip(ranges, ranges[1:]):
+            if b_off < a_off + a_len:
+                errors.append(
+                    f"Overlapping chunk payload ranges in binary TOC: [{a_off}..{a_off + a_len}] / [{b_off}..{b_off + b_len}]"
+                )
 
         preamble_bytes = bytes(self._buf[: self.superblock_offset])
         if _blake2b_256(preamble_bytes).hex() != str(self.manifest.get("preamble_hash", "")):
@@ -2150,6 +2202,11 @@ class EvrReader:
             "modalities": self.manifest.get("modalities", []),
             "merkle_root": self.manifest.get("merkle_root"),
             "signature_verified": sig_verified,
+            "signature_trust": (
+                None
+                if not sig_verified
+                else ("public-demo-key" if sign_key == EVR_PUBLIC_DEMO_SIGN_KEY else "configured-key")
+            ),
             "errors": errors,
         }
 
@@ -2281,6 +2338,7 @@ class EvrReader:
         dest = Path(dest_dir).expanduser().resolve()
         dest.mkdir(parents=True, exist_ok=True)
         extracted: list[Path] = []
+        seen_targets: set[Path] = set()
         for idx, ch in enumerate(self.chunks):
             rel = str(ch["path"])
             is_internal = rel.startswith("__evr__/")
@@ -2292,6 +2350,9 @@ class EvrReader:
                 target.relative_to(dest)
             except ValueError as exc:
                 raise ValueError(f"Unsafe path traversal blocked in .evr chunk: {rel}") from exc
+            if target in seen_targets:
+                raise ValueError(f"Duplicate extraction path in .evr capsule refused: {rel}")
+            seen_targets.add(target)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(self.read_chunk(idx))
             extracted.append(target)
@@ -2587,11 +2648,12 @@ def verify_rust_evr_interop(evr_file: str | Path) -> dict[str, Any]:
 def create_showcase_evr_capsule(
     output_path: str | Path,
     polyglot: bool = True,
-    sign_key: str = "sovereign-evr-v1-key",
+    sign_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Create a deterministic reference `.evr` ("Everything" v1.0) capsule containing all 12 computing domains.
     """
+    sign_key = _resolve_seal_key(sign_key)
     builder = EvrBuilder(
         title="Sovereign Everything Capsule (.evr v1.0)",
         author="Ilias Chrysovergis",
@@ -2717,7 +2779,7 @@ def seal_gwi_audit_capsule(
     target_path: str | Path,
     output_path: str | Path | None = None,
     report: dict[str, Any] | None = None,
-    sign_key: str = "sovereign-evr-v1-key",
+    sign_key: str | None = None,
     anchor_pistis: bool = True,
     ledger_file: Path | None = None,
     require_elenchus: bool = False,
@@ -2797,6 +2859,7 @@ def seal_gwi_audit_capsule(
     tiers = gwi_report.get("tiers", {})
     lenses_block = gwi_report.get("craft_lenses", {})
 
+    sign_key = _resolve_seal_key(sign_key)
     builder = EvrBuilder(
         title=f"GWI Sovereign Audit Capsule — {proj_name}",
         author="Sovereign Organon GWI Gate",
@@ -3010,7 +3073,7 @@ def seal_gwi_audit_capsule(
 def seal_paper_reproducibility_capsule(
     target_path: str | Path,
     output_path: str | Path | None = None,
-    sign_key: str = "sovereign-evr-v1-key",
+    sign_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Wedge 2: Bundle a scientific manuscript (`.tex`/`.bib`/`.pdf`), raw measurement traces (`TENSOR`),
@@ -3021,6 +3084,7 @@ def seal_paper_reproducibility_capsule(
     paper_dir = root if root.is_dir() else root.parent
     out_evr = Path(output_path).expanduser().resolve() if output_path else (paper_dir / "artifact.evr")
 
+    sign_key = _resolve_seal_key(sign_key)
     builder = EvrBuilder(
         title=f"Scientific Reproducibility Capsule — {paper_dir.name}",
         author="Sovereign Scientific Paper Engine",
@@ -3108,7 +3172,7 @@ def seal_paper_reproducibility_capsule(
 def pack_vault_knowledge_cartridge(
     vault_dir: str | Path,
     output_path: str | Path | None = None,
-    sign_key: str = "sovereign-evr-v1-key",
+    sign_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Wedge 3: Pack a Sovereign KB vault into an installable zero-copy Knowledge Cartridge (`cartridge.evr`)
@@ -3120,6 +3184,7 @@ def pack_vault_knowledge_cartridge(
         raise ValueError(f"Vault directory '{v_root}' does not exist")
     out_evr = Path(output_path).expanduser().resolve() if output_path else (v_root / "vault_cartridge.evr")
 
+    sign_key = _resolve_seal_key(sign_key)
     builder = EvrBuilder(
         title=f"Sovereign Knowledge Cartridge — {v_root.name}",
         author="Sovereign Organon (Episteme)",
@@ -3185,7 +3250,7 @@ def pack_vault_knowledge_cartridge(
 def pack_poetics_show_capsule(
     target_path: str | Path | None = None,
     output_path: str | Path | None = None,
-    sign_key: str = "sovereign-evr-v1-key",
+    sign_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Wedge 4: Pack a Poetics LBVR / Pods Offline Show Package & Law L10 Session Capsule (`show.evr`)
@@ -3194,6 +3259,7 @@ def pack_poetics_show_capsule(
     and Law L10 visitor resonance offering & venue entitlement (`STATE`).
     """
     out_evr = Path(output_path or target_path or "poetics_show_capsule.evr").expanduser().resolve()
+    sign_key = _resolve_seal_key(sign_key)
     builder = EvrBuilder(
         title="Poetics LBVR & Pods Offline Show Capsule (.evr v1.0)",
         author="Poetics Spatial Cinema Engine",
@@ -3265,7 +3331,7 @@ See [[spatial/pod_stage.obj]] and [[tables/cue_timeline.csv]] for deterministic 
 def pack_digital_twin_snapshot(
     target_path: str | Path | None = None,
     output_path: str | Path | None = None,
-    sign_key: str = "sovereign-evr-v1-key",
+    sign_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Wedge 5: Pack an NTUA 3D Digital Twin & 2D Shallow-Water Equations (`SWE`) Flood Snapshot (`twin.evr`)
@@ -3273,6 +3339,7 @@ def pack_digital_twin_snapshot(
     hydrometric gauge time-series (`TABLE` -> `SQLite3`), and explicit CRS/datum metadata (`STATE`).
     """
     out_evr = Path(output_path or target_path or "digital_twin_snapshot.evr").expanduser().resolve()
+    sign_key = _resolve_seal_key(sign_key)
     builder = EvrBuilder(
         title="3D GIS & 2D SWE Flood Digital Twin Snapshot (.evr v1.0)",
         author="Sovereign Geospatial Digital Twin Engine",
@@ -3384,6 +3451,11 @@ def register_evr_subparser(subparsers: Any, show_all_aliases: bool = False) -> N
             action="store_true",
             help="Include __evr__/ internal streams when extracting",
         )
+        p.add_argument(
+            "--require-signature",
+            action="store_true",
+            help="`evr verify`: fail when the capsule is SIGNED but no key is available to check it",
+        )
         p.add_argument("--rust", action="store_true", help="Also run native Rust (`rustc`) cross-language verification")
         p.add_argument(
             "--require-elenchus",
@@ -3400,6 +3472,12 @@ def cmd_evr(args: argparse.Namespace) -> None:
     extra: list[str] = list(getattr(args, "extra", []) or [])
     as_json = bool(getattr(args, "json", False))
     sign_key = getattr(args, "sign_key", "") or None
+
+    def _exit_if_unverified(summ: dict[str, Any]) -> None:
+        # Post-write verification failed: the CLI must not report success.
+        if not (summ.get("verification") or {}).get("valid", False):
+            print("Error: post-write .evr verification failed (valid=False)", file=sys.stderr)
+            sys.exit(1)
 
     if action == "status":
         payload = {
@@ -3435,7 +3513,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
 
     if action == "demo":
         out_file = Path(args.output or (target if target else "everything_showcase.evr")).expanduser().resolve()
-        summ = create_showcase_evr_capsule(out_file, polyglot=True, sign_key=sign_key or "sovereign-evr-v1-key")
+        summ = create_showcase_evr_capsule(out_file, polyglot=True, sign_key=sign_key)
         if getattr(args, "rust", False):
             summ["rust_interop"] = verify_rust_evr_interop(out_file)
         if as_json:
@@ -3446,6 +3524,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
             print(f"  Chunks & Modalities  : {summ['chunk_count']} chunks across {', '.join(summ['modalities'])}")
             print(f"  RFC 6962 Merkle Root : {summ['merkle_root']}")
             print(f"  6-Gate Verification  : {'PASS' if summ['verification']['valid'] else 'FAIL'}")
+        _exit_if_unverified(summ)
         return
 
     if action == "seal-gwi":
@@ -3455,7 +3534,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
             summ = seal_gwi_audit_capsule(
                 target_p,
                 output_path=out_p,
-                sign_key=sign_key or "sovereign-evr-v1-key",
+                sign_key=sign_key,
                 require_elenchus=bool(getattr(args, "require_elenchus", False)),
             )
         except ValueError as exc:
@@ -3482,14 +3561,13 @@ def cmd_evr(args: argparse.Namespace) -> None:
                 print(
                     f"  Pistis Chain Event   : seq=#{summ['pistis_chain_event']['seq']} ({summ['pistis_chain_event']['event_hash'][:16]}...)"
                 )
+        _exit_if_unverified(summ)
         return
 
     if action == "seal-paper":
         target_p = Path(target or ".").expanduser().resolve()
         out_p = Path(args.output).expanduser().resolve() if args.output else None
-        summ = seal_paper_reproducibility_capsule(
-            target_p, output_path=out_p, sign_key=sign_key or "sovereign-evr-v1-key"
-        )
+        summ = seal_paper_reproducibility_capsule(target_p, output_path=out_p, sign_key=sign_key)
         if as_json:
             print(json.dumps(summ, indent=2))
         else:
@@ -3498,12 +3576,13 @@ def cmd_evr(args: argparse.Namespace) -> None:
             )
             print(f"  RFC 6962 Merkle Root : {summ['merkle_root']}")
             print(f"\n{summ['latex_reproducibility_stamp'].rstrip()}")
+        _exit_if_unverified(summ)
         return
 
     if action == "pack-vault":
         target_p = Path(target or ".").expanduser().resolve()
         out_p = Path(args.output).expanduser().resolve() if args.output else None
-        summ = pack_vault_knowledge_cartridge(target_p, output_path=out_p, sign_key=sign_key or "sovereign-evr-v1-key")
+        summ = pack_vault_knowledge_cartridge(target_p, output_path=out_p, sign_key=sign_key)
         if as_json:
             print(json.dumps(summ, indent=2))
         else:
@@ -3512,11 +3591,12 @@ def cmd_evr(args: argparse.Namespace) -> None:
                 f"  Notes & Embeddings   : {summ['notes_packed']} notes -> 64B-aligned tensor {summ['embedding_tensor_shape']}"
             )
             print(f"  RFC 6962 Merkle Root : {summ['merkle_root']}")
+        _exit_if_unverified(summ)
         return
 
     if action == "pack-show":
         out_p = Path(args.output or target or "poetics_show_capsule.evr").expanduser().resolve()
-        summ = pack_poetics_show_capsule(output_path=out_p, sign_key=sign_key or "sovereign-evr-v1-key")
+        summ = pack_poetics_show_capsule(output_path=out_p, sign_key=sign_key)
         if as_json:
             print(json.dumps(summ, indent=2))
         else:
@@ -3525,11 +3605,12 @@ def cmd_evr(args: argparse.Namespace) -> None:
             )
             print(f"  Modalities           : {', '.join(summ['modalities'])}")
             print(f"  RFC 6962 Merkle Root : {summ['merkle_root']}")
+        _exit_if_unverified(summ)
         return
 
     if action == "pack-twin":
         out_p = Path(args.output or target or "digital_twin_snapshot.evr").expanduser().resolve()
-        summ = pack_digital_twin_snapshot(output_path=out_p, sign_key=sign_key or "sovereign-evr-v1-key")
+        summ = pack_digital_twin_snapshot(output_path=out_p, sign_key=sign_key)
         if as_json:
             print(json.dumps(summ, indent=2))
         else:
@@ -3538,6 +3619,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
             )
             print(f"  Modalities           : {', '.join(summ['modalities'])}")
             print(f"  RFC 6962 Merkle Root : {summ['merkle_root']}")
+        _exit_if_unverified(summ)
         return
 
     if action == "pack":
@@ -3546,6 +3628,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
             print("Error: `evr pack` requires at least one input file or directory.", file=sys.stderr)
             sys.exit(1)
         out_path = Path(args.output or "bundle.evr").expanduser().resolve()
+        sign_key = resolve_evr_sign_key(sign_key, fallback_demo=False)
         builder = EvrBuilder(
             title=args.title,
             author=args.author,
@@ -3561,6 +3644,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
         written = builder.write(out_path)
         with EvrReader(written) as reader:
             summ = reader.summary()
+            summ["verification"] = reader.verify(sign_key=sign_key)
         if as_json:
             print(json.dumps(summ, indent=2))
         else:
@@ -3569,6 +3653,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
             )
             print(f"  Modalities  : {', '.join(summ['modalities'])}")
             print(f"  Merkle Root : {summ['merkle_root']}")
+        _exit_if_unverified(summ)
         return
 
     if action == "bench":
@@ -3592,7 +3677,7 @@ def cmd_evr(args: argparse.Namespace) -> None:
                 t_search_us = (time.perf_counter() - t2) * 1_000_000.0
 
                 t3 = time.perf_counter()
-                ver = reader.verify(sign_key="sovereign-evr-v1-key")
+                ver = reader.verify(sign_key=EVR_PUBLIC_DEMO_SIGN_KEY)
                 t_verify_us = (time.perf_counter() - t3) * 1_000_000.0
 
             rust_res = verify_rust_evr_interop(cap_path)
@@ -3646,8 +3731,20 @@ def cmd_evr(args: argparse.Namespace) -> None:
         return
 
     if action == "verify":
+        verify_key = resolve_evr_sign_key(sign_key, fallback_demo=False)
         with EvrReader(evr_path) as reader:
-            ver = reader.verify(sign_key=sign_key)
+            ver = reader.verify(sign_key=verify_key)
+            is_signed = bool(reader.flags & int(EvrFlags.SIGNED))
+        if is_signed and verify_key is None:
+            ver["signature_checked"] = False
+            print(
+                "Warning: capsule carries the SIGNED flag but no key was given (--sign-key / SKB_EVR_SIGN_KEY); "
+                "the HMAC signature was NOT checked",
+                file=sys.stderr,
+            )
+            if getattr(args, "require_signature", False):
+                ver["valid"] = False
+                ver["errors"].append("Signature required (--require-signature) but no verification key available")
         if getattr(args, "rust", False):
             ver["rust_interop"] = verify_rust_evr_interop(evr_path)
             if not ver["rust_interop"].get("valid", False):
@@ -3662,6 +3759,8 @@ def cmd_evr(args: argparse.Namespace) -> None:
             print(f"  RFC 6962 Merkle Root    : {ver['merkle_root']}")
             if ver.get("signature_verified") is not None:
                 print(f"  HMAC-SHA256 Signature   : {ver['signature_verified']}")
+                if ver.get("signature_trust"):
+                    print(f"  Signature Trust         : {ver['signature_trust']}")
             if "rust_interop" in ver:
                 print(f"  Native Rust Kernel      : {'PASS' if ver['rust_interop'].get('valid') else 'FAIL'}")
             for err in ver["errors"]:
@@ -3736,6 +3835,8 @@ def cmd_evr(args: argparse.Namespace) -> None:
             print(f"=== RFC 6962 Merkle Inclusion Proof: {proof['path']} (#{proof['chunk_index']}) ===")
             print(f"  Merkle Root : {proof['merkle_root']}")
             print(f"  Audit Steps : {proof['proof_length']} · Verified={proof['verified']}")
+        if not proof.get("verified", False):
+            sys.exit(1)
         return
 
     if action == "extract":

@@ -328,7 +328,8 @@ def test_3dgs_splat_header_parser_and_auditor(tmp_path: Path) -> None:
         "property float y\n"
         "property float z\n" + "".join(f"property float f_rest_{i}\n" for i in range(9)) + "end_header\n"
     )
-    ply_path.write_bytes(ply_header.encode("ascii") + b"\x00" * 512)
+    # Full binary payload: 125,000 vertices x 12 float32 properties (48 B stride) — a short payload is truncation.
+    ply_path.write_bytes(ply_header.encode("ascii") + b"\x00" * (125000 * 48))
 
     # 1.92 MB `.splat` file (60,000 gaussians) -> tests that directory audit does NOT drop >1.5MB assets
     splat_path = tmp_path / "compact_scene.splat"

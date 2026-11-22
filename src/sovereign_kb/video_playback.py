@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,7 +33,29 @@ Evaluate and report across 5 specific criteria:
 3. Narrative & Demonstration Flow: What key phases are shown? Does the storyline make sense from an engineering/product perspective?
 4. Glitch & Defect Detection: Did you detect any frozen frames, render tearing, visual pop-in, audio-visual desyncs, or corrupt frames?
 5. Final Verdict: Explicitly state "APPROVED FOR RELEASE" or "REVISE", along with an overall Watchability Score out of 10 and a concise summary.
+
+End your response with a single line of the exact form `Verdict: APPROVED` or `Verdict: REVISE`.
 """
+
+FFMPEG_TIMEOUT_S = 300
+TRIAD_TIMEOUT_S = 1800
+
+_VERDICT_LINE_RE = re.compile(
+    r"^\s*\**\s*(?:final\s+)?verdict\s*\**\s*[:\-]\s*\**\s*(APPROVED|REVISE|REJECT\w*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_BARE_APPROVED_RE = re.compile(r"^\s*\**\s*APPROVED(?:\s+FOR\s+RELEASE)?\s*\**\s*\.?\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_review_verdict(text: str) -> str:
+    """Anchored verdict parse: last `Verdict: X` line wins; else a line that is exactly
+    APPROVED / APPROVED FOR RELEASE. Anything else (e.g. "cannot be approved") is REVISE."""
+    matches = _VERDICT_LINE_RE.findall(text or "")
+    if matches:
+        return "APPROVED" if matches[-1].upper() == "APPROVED" else "REVISE"
+    if _BARE_APPROVED_RE.search(text or ""):
+        return "APPROVED"
+    return "REVISE"
 
 
 def _ensure_bedrock_env() -> None:
@@ -76,7 +99,9 @@ def audit_video_playback_native(
     try:
         import boto3
     except ImportError:
-        raise RuntimeError("`boto3` is required for Bedrock native video playback audit. Run `uv pip install boto3`.")
+        raise RuntimeError(
+            "`boto3` is required for Bedrock native video playback audit. Run `uv pip install boto3`."
+        ) from None
 
     active_region = (
         region_name or os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "eu-central-1"
@@ -110,11 +135,7 @@ def audit_video_playback_native(
     raw_text = content_blocks[0].get("text", "") if content_blocks else ""
     usage = response.get("usage", {})
 
-    verdict_str = "REVISE"
-    if "APPROVED FOR RELEASE" in raw_text or "VERDICT: APPROVED" in raw_text.upper():
-        verdict_str = "APPROVED"
-    elif "APPROVED" in raw_text.split("Final Verdict:")[-1].upper():
-        verdict_str = "APPROVED"
+    verdict_str = parse_review_verdict(raw_text)
 
     return {
         "status": "PASS" if verdict_str == "APPROVED" else "FAIL",
@@ -158,10 +179,10 @@ def extract_timeline_snapshots(
         str(video_path),
     ]
     try:
-        dur_str = subprocess.check_output(cmd_dur, text=True).strip()
+        dur_str = subprocess.check_output(cmd_dur, text=True, timeout=FFMPEG_TIMEOUT_S).strip()
         duration = float(dur_str)
     except Exception as e:
-        raise RuntimeError(f"Could not determine video duration: {e}")
+        raise RuntimeError(f"Could not determine video duration: {e}") from e
 
     frames: List[Path] = []
     step = duration / (num_frames + 1)
@@ -181,7 +202,10 @@ def extract_timeline_snapshots(
             "2",
             str(out_frame),
         ]
-        res = subprocess.run(cmd, capture_output=True)
+        try:
+            res = subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            continue
         if res.returncode == 0 and out_frame.is_file():
             frames.append(out_frame)
 
@@ -205,7 +229,7 @@ def audit_video_triad_keyframes(
     active_prompt = prompt or (
         f"Conduct a rigorous cinematic and technical review of these {len(frames)} chronological keyframes "
         f"extracted from {video_path.name}. Evaluate visual pacing, layout, typography legibility, and technical accuracy. "
-        "Conclude with explicit verdict: APPROVED FOR RELEASE or REVISE."
+        "End your response with a single line of the exact form `Verdict: APPROVED` or `Verdict: REVISE`."
     )
 
     args = [oc_bin, "triad", active_prompt]
@@ -213,11 +237,16 @@ def audit_video_triad_keyframes(
         args.extend(["-f", str(f)])
 
     t0 = time.perf_counter()
-    proc = subprocess.run(args, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=TRIAD_TIMEOUT_S)
+        returncode = proc.returncode
+        output_text = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+    except subprocess.TimeoutExpired:
+        returncode = -1
+        output_text = f"`oc triad` timed out after {TRIAD_TIMEOUT_S}s"
     latency_s = time.perf_counter() - t0
 
-    output_text = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
-    verdict = "APPROVED" if "APPROVED" in output_text else "REVISE"
+    verdict = parse_review_verdict(output_text) if returncode == 0 else "REVISE"
 
     return {
         "status": "PASS" if verdict == "APPROVED" else "FAIL",
@@ -226,6 +255,7 @@ def audit_video_triad_keyframes(
         "frames_extracted": len(frames),
         "frames_dir": str(snapshots_dir.resolve()),
         "latency_s": round(latency_s, 2),
+        "triad_returncode": returncode,
         "triad_output": output_text,
     }
 

@@ -642,6 +642,45 @@ def _classify_episodic_bullet(bullet: str) -> tuple[bool, int, str]:
     return True, priority, norm_key
 
 
+class _SnapshotMap(dict):
+    """Pre-consolidation snapshots (path -> original text or None) plus `.written`: path -> the exact text the
+    consolidation step last wrote (None = it deleted the file). Rollback restores only paths whose current
+    content still equals what was written, so user edits made during the cycle are never clobbered."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.written: dict[Path, str | None] = {}
+
+
+def _rollback_consolidation(snapshots: dict[Path, str | None]) -> tuple[list[str], list[str]]:
+    """Undo consolidation writes recorded in `snapshots.written`; skip (and warn) on any concurrently edited file."""
+    import sys
+
+    written: dict[Path, str | None] = getattr(snapshots, "written", {})
+    restored: list[str] = []
+    skipped: list[str] = []
+    for path, wrote in written.items():
+        if wrote is None:
+            unchanged = not path.exists()
+        else:
+            try:
+                unchanged = path.is_file() and path.read_bytes() == wrote.encode("utf-8")
+            except OSError:
+                unchanged = False
+        if not unchanged:
+            skipped.append(str(path))
+            print(f"[rsi] WARNING: rollback skipped {path}: modified since consolidation wrote it", file=sys.stderr)
+            continue
+        orig_content = snapshots.get(path)
+        if orig_content is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(orig_content, encoding="utf-8")
+        restored.append(str(path))
+    return restored, skipped
+
+
 def heal_and_consolidate_vault(
     vault_dir: Path,
     list_md_fn: Callable[[Path], list[Path]],
@@ -661,7 +700,7 @@ def heal_and_consolidate_vault(
     losslessly while healing missing required fields.
     """
     md_files = list_md_fn(vault_dir)
-    snapshots: dict[Path, str | None] = {p: p.read_text(encoding="utf-8", errors="replace") for p in md_files}
+    snapshots = _SnapshotMap({p: p.read_text(encoding="utf-8", errors="replace") for p in md_files})
     distill_rel = "02-operating-system/autonomous-rsi-distillations.md"
     distill_path = vault_dir / distill_rel
     if distill_path not in snapshots:
@@ -745,6 +784,7 @@ def heal_and_consolidate_vault(
             new_fm = "---\n" + "\n".join(patched_lines) + "\n---\n"
             rest = text[end_idx + 5 :]
             p.write_text(new_fm + rest, encoding="utf-8")
+            snapshots.written[p] = new_fm + rest
         else:
             body = text.lstrip()
             related_block = 'related:\n  - "[[INDEX]]"\n' if rel != "INDEX.md" else ""
@@ -758,6 +798,7 @@ def heal_and_consolidate_vault(
                 f"---\n\n"
             )
             p.write_text(new_fm + body, encoding="utf-8")
+            snapshots.written[p] = new_fm + body
         healed_frontmatter.append(rel)
 
     # Step 2B: High-Signal Distillation of `04-episodic/*.md` into `02-operating-system/autonomous-rsi-distillations.md`
@@ -877,8 +918,10 @@ def heal_and_consolidate_vault(
             if snapshots.get(distill_path) != distill_content or not distill_path.is_file():
                 distill_path.parent.mkdir(parents=True, exist_ok=True)
                 distill_path.write_text(distill_content, encoding="utf-8")
+                snapshots.written[distill_path] = distill_content
         elif distill_path.exists():
             distill_path.unlink(missing_ok=True)
+            snapshots.written[distill_path] = None
 
     # Step 2C: Heal orphan notes (Gate 3) & missing INDEX.md (Gate 2) by linking them in INDEX.md
     md_files = list_md_fn(vault_dir)
@@ -898,7 +941,7 @@ def heal_and_consolidate_vault(
         count == 0 for rel, count in inbound_counts.items() if rel not in ("INDEX.md", "AGENTS.md", "README.md")
     )
     if not index_path.is_file() and (has_orphans or links_to_index):
-        index_path.write_text(
+        new_index = (
             "---\n"
             'title: "Vault Index — Map of Content"\n'
             "type: moc\n"
@@ -907,9 +950,10 @@ def heal_and_consolidate_vault(
             "tags: [index, moc, navigation]\n"
             "---\n\n"
             "# Vault Index (`INDEX`)\n\n"
-            "## Notes\n",
-            encoding="utf-8",
+            "## Notes\n"
         )
+        index_path.write_text(new_index, encoding="utf-8")
+        snapshots.written[index_path] = new_index
         inbound_counts["INDEX.md"] = 1 if links_to_index else 0
 
     if index_path.is_file():
@@ -927,6 +971,7 @@ def heal_and_consolidate_vault(
                 idx_modified = True
         if idx_modified:
             index_path.write_text(idx_text, encoding="utf-8")
+            snapshots.written[index_path] = idx_text
 
     # Re-sync index
     sync_fn(argparse.Namespace(vault=str(vault_dir), force=False, no_embed=no_embed, quiet=True))
@@ -1125,7 +1170,10 @@ def run_rsi_cycle(
         or after_heldout["ndcg_at_5"] < before_heldout["ndcg_at_5"] - 1e-6
         or after_heldout["recall_at_1"] < before_heldout["recall_at_1"] - 1e-6
     )
-    heal_tolerance = -5e-4 if snapshots else -1e-6
+    # The looser tolerance applies only when consolidation actually rewrote vault files (snapshots always holds
+    # the distill/INDEX keys, so its truthiness said nothing).
+    heal_wrote_files = bool(getattr(snapshots, "written", None))
+    heal_tolerance = -5e-4 if heal_wrote_files else -1e-6
     regressed = (
         rank_regressed
         or (delta_j_tune < -1e-6)
@@ -1138,11 +1186,8 @@ def run_rsi_cycle(
 
     if regressed:
         # Rollback file modifications and policy atomically if capability or gate regressed
-        for path, orig_content in snapshots.items():
-            if orig_content is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_text(orig_content, encoding="utf-8")
+        _restored, rollback_skipped = _rollback_consolidation(snapshots)
+        consolidation["rollback_skipped"] = rollback_skipped
         if orig_policy_raw is None:
             p_file.unlink(missing_ok=True)
         else:

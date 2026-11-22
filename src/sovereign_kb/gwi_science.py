@@ -34,6 +34,7 @@ Probes:
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -336,11 +337,32 @@ def _package_json(root: Path) -> dict[str, Any]:
         return {}
 
 
+def _count_python_tests(src: str) -> int:
+    """Count `test*` functions pytest would collect: module level or inside `Test*` classes.
+
+    Parsed via AST so fixture code embedded in string literals (e.g. a test that writes a
+    sample `test_x.py` into tmp_path) and nested helpers are not counted. Falls back to the
+    line regex when the file does not parse.
+    """
+    try:
+        tree = ast.parse(src)
+    except (SyntaxError, ValueError):
+        return len(_PY_TEST_DEF_RE.findall(src))
+    fn_types = (ast.FunctionDef, ast.AsyncFunctionDef)
+    n = 0
+    for node in tree.body:
+        if isinstance(node, fn_types) and node.name.startswith("test"):
+            n += 1
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            n += sum(1 for m in node.body if isinstance(m, fn_types) and m.name.startswith("test"))
+    return n
+
+
 def _static_test_count(root: Path) -> dict[str, int]:
     counts = {"python": 0, "js": 0, "rust": 0}
     for p in _walk(root, (".py",)):
         if re.match(r"(test_.*|.*_test)\.py$", p.name):
-            counts["python"] += len(_PY_TEST_DEF_RE.findall(_read(p)))
+            counts["python"] += _count_python_tests(_read(p))
     for p in _walk(root, (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")):
         if re.search(r"\.(?:test|spec)\.[cm]?[jt]sx?$", p.name):
             counts["js"] += len(_JS_TEST_DEF_RE.findall(_read(p)))

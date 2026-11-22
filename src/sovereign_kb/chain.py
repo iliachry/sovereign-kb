@@ -2485,19 +2485,23 @@ def cmd_chain(args: argparse.Namespace) -> None:
             "phd_tokenomics": tok,
             "phd_aristocracy": ari,
         }
-        if as_json:
-            print(json.dumps(combined, indent=2))
-            return
-
         s = combined["summary"]
-        s1_s4_ok = (
+        s1_s4_ok = bool(
             neg["s1_signatures_verified"]
             and neg["s2_self_acceptance_blocked"]
             and neg["s2_frontrunning_blocked"]
             and neg["s3_atomic_plt_minted"]
             and neg["system_wei_conserved"]
         )
-        lya_ok = tok["pid_mpc_control"]["lyapunov_certificate"]["schur_stable"]
+        lya_ok = bool(tok["pid_mpc_control"]["lyapunov_certificate"]["schur_stable"])
+        const_ok = bool(s.get("constitutional_resilience_ok"))
+        suite_ok = s1_s4_ok and lya_ok and const_ok
+        if as_json:
+            print(json.dumps(combined, indent=2))
+            if not suite_ok:
+                sys.exit(1)
+            return
+
         print("╔══════════════════════════════════════════════════════════════════════════════════════════╗")
         print("║  PISTIS (Πίστις) — ON-CHAIN COVENANT, BILATERAL LICENSING & PHD TOKENOMICS ENGINE        ║")
         print("╚══════════════════════════════════════════════════════════════════════════════════════════╝")
@@ -2516,7 +2520,9 @@ def cmd_chain(args: argparse.Namespace) -> None:
         )
         print(
             f"  [4] PhD Aristocracy (`aristocracy`) : Gamma_0={s['aristocracy_gamma0']:.4f} (Size-Adj={s['aristocracy_tilde0']:.4f}, "
-            f"Gini={s['aristocracy_gini0']:.4f}) | Constitutional P1-P5={'PASS' if s['constitutional_resilience_ok'] else 'FAIL'}"
+            f"Gini={s['aristocracy_gini0']:.4f}) | Constitutional P1-P5={'PASS' if const_ok else 'FAIL'}"
         )
+        if not suite_ok:
+            sys.exit(1)
     except (ValueError, PermissionError, TimeoutError, KeyError, OSError) as exc:
         _emit_cli_error(str(exc), as_json=as_json)

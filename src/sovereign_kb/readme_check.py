@@ -208,6 +208,20 @@ def _norm_route(r: str) -> str:
     return re.sub(r"\{[^}]*\}", "{}", r.rstrip("/"))
 
 
+_PARAM_SEG_RE = re.compile(r"\{[^}/]*\}|:\w+|<[^>/]*>")
+
+
+def _route_documented(route: str, docs: str, documented_r: set[str]) -> bool:
+    """A route is documented if it matches the prefixed README route scan, or if its path appears literally
+    in the docs with path params written in any common style (`{id}`, `:id`, `<id>`)."""
+    norm = _norm_route(route)
+    if norm in documented_r:
+        return True
+    pieces = _PARAM_SEG_RE.split(norm)
+    body = r"(?:\{[^}/\s]*\}|:\w+|<[^>/\s]*>)".join(re.escape(p) for p in pieces)
+    return re.search(r"(?<![\w.])" + body + r"/?(?![\w/{<:-])", docs) is not None
+
+
 def surface_issues(repo: Path, base: str, head: str, readme: str, clis: set[str]) -> list[str]:
     base_c, base_r = surface(repo, base)
     head_c, head_r = surface(repo, head)
@@ -229,10 +243,10 @@ def surface_issues(repo: Path, base: str, head: str, readme: str, clis: set[str]
         if c in documented_c:
             issues.append(f"[surface] CLI command `{c}` was removed but README.md still advertises it")
     for r_ in sorted(head_r - base_r):
-        if _norm_route(r_) not in documented_r:
+        if not _route_documented(r_, docs, documented_r):
             issues.append(f"[surface] new HTTP route `{r_}` added in this push but not documented in README.md")
     for r_ in sorted(base_r - head_r):
-        if _norm_route(r_) in documented_r:
+        if _route_documented(r_, docs, documented_r):
             issues.append(f"[surface] HTTP route `{r_}` was removed but README.md still documents it")
     return issues
 
@@ -285,7 +299,8 @@ def check(repo: Path, base: str | None, head: str, runtime: bool = True) -> tupl
     elif runtime:
         notes.append("runtime checks (CLI --help, pytest count) skipped: pushed commit is not the checked-out HEAD")
 
-    if base and base != ZERO_SHA:
+    base = _resolve_base(repo, base, head)
+    if base:
         issues += surface_issues(repo, base, head, readme, clis)
         changed = _git(repo, "diff", "--name-only", base, head).stdout.split()
         if changed and "README.md" not in changed:
@@ -297,6 +312,28 @@ def check(repo: Path, base: str | None, head: str, runtime: bool = True) -> tupl
     return issues, notes
 
 
+def _has_commit(repo: Path, sha: str) -> bool:
+    return _git(repo, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+
+
+def _base_from_remotes(repo: Path, head: str) -> str | None:
+    """Parent of the first commit reachable from `head` but from no remote-tracking ref (None if none/root)."""
+    first = _git(repo, "rev-list", "--reverse", head, "--not", "--remotes").stdout.split()
+    if not first:
+        return None
+    return _git(repo, "rev-parse", "--verify", "--quiet", f"{first[0]}^").stdout.strip() or None
+
+
+def _resolve_base(repo: Path, base: str | None, head: str) -> str | None:
+    """Usable diff base: `base` itself if present locally; if it is set but missing from the object store
+    (e.g. remote force-pushed and not fetched), fall back to the `--not --remotes` range like a new branch."""
+    if not base or base == ZERO_SHA:
+        return None
+    if _has_commit(repo, base):
+        return base
+    return _base_from_remotes(repo, head)
+
+
 def _pre_push_ranges(repo: Path, stdin: str) -> list[tuple[str | None, str]]:
     ranges: list[tuple[str | None, str]] = []
     for line in stdin.splitlines():
@@ -304,12 +341,8 @@ def _pre_push_ranges(repo: Path, stdin: str) -> list[tuple[str | None, str]]:
         if len(parts) != 4 or parts[1] == ZERO_SHA:
             continue  # malformed or branch deletion
         lsha, rsha = parts[1], parts[3]
-        if rsha == ZERO_SHA:
-            first = _git(repo, "rev-list", "--reverse", lsha, "--not", "--remotes").stdout.split()
-            rsha = None
-            if first:
-                parent = _git(repo, "rev-parse", "--verify", "--quiet", f"{first[0]}^")
-                rsha = parent.stdout.strip() or None
+        if rsha == ZERO_SHA or not _has_commit(repo, rsha):
+            rsha = _base_from_remotes(repo, lsha)
         ranges.append((rsha, lsha))
     return ranges
 

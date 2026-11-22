@@ -783,7 +783,7 @@ class SoarKernel:
         changed = True
         while changed:
             changed = False
-            for inst_id, inst in list(self.instantiations.items()):
+            for _inst_id, inst in list(self.instantiations.items()):
                 if inst.support != "i":
                     continue
                 prod = self.productions.get(inst.production_name)
@@ -1105,7 +1105,7 @@ class SoarKernel:
 
         # Build RHS actions for the chunk
         chunk_actions: list[Union[RHSAction, RHSFunctionStandalone]] = []
-        for act, id_val, attr_val, val, prefs in superstate_results:
+        for _act, id_val, attr_val, val, prefs in superstate_results:
             rhs_id = var_for_id(id_val) if _is_identifier(id_val) else id_val
             rhs_v: Symbol = var_for_id(val) if (isinstance(val, str) and _is_identifier(val)) else val
             new_prefs: list[PreferenceSpec] = []
@@ -1364,7 +1364,7 @@ class SoarKernel:
         for pid, p in list(self.preferences.items()):
             if p.state_id in removed_states or p.id in removed_states:
                 del self.preferences[pid]
-        for iid, inst in list(self.instantiations.items()):
+        for _iid, inst in list(self.instantiations.items()):
             if inst.state_id in removed_states:
                 self._retract_instantiation(inst)
 

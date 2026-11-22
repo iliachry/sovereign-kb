@@ -9,7 +9,9 @@ and `gwi_version` have not changed since its last passing audit.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -17,14 +19,91 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from . import __version__ as KB_VERSION
-from .gwi_core import GWI_STANDARD_VERSION
+from .gwi_core import DEFAULT_K, DEFAULT_THETA, DEFAULT_THRESHOLD_G, GWI_STANDARD_VERSION
 
 _DEFAULT_AUDIT_REGISTRY_PATH = Path.home() / ".swm" / "audit_registry.json"
-AUDIT_REGISTRY_PATH = _DEFAULT_AUDIT_REGISTRY_PATH
+# `SWM_AUDIT_REGISTRY` overrides the registry location (tests, sandboxes, alternate vaults).
+AUDIT_REGISTRY_PATH = (
+    Path(os.environ["SWM_AUDIT_REGISTRY"]).expanduser()
+    if os.environ.get("SWM_AUDIT_REGISTRY", "").strip()
+    else _DEFAULT_AUDIT_REGISTRY_PATH
+)
+_GWI_SOURCE_FILES = ("gwi.py", "gwi_core.py", "gwi_science.py")
+_GWI_SRC_HASH_CACHE: dict[tuple[tuple[str, int, int], ...], str] = {}
+
+
+class AuditRegistryCorruptError(RuntimeError):
+    """Raised when `audit_registry.json` cannot be parsed (a backup copy is preserved next to it)."""
+
+
+def compute_gwi_source_sha() -> str:
+    """Short hash of the GWI module sources so uncommitted scorer edits invalidate cached PASSes."""
+    pkg_dir = Path(__file__).resolve().parent
+    stat_key: list[tuple[str, int, int]] = []
+    for name in _GWI_SOURCE_FILES:
+        try:
+            st = (pkg_dir / name).stat()
+            stat_key.append((name, st.st_mtime_ns, st.st_size))
+        except OSError:
+            stat_key.append((name, -1, -1))
+    key = tuple(stat_key)
+    cached = _GWI_SRC_HASH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    h = hashlib.sha256()
+    for name in _GWI_SOURCE_FILES:
+        h.update(name.encode("utf-8") + b"\0")
+        try:
+            h.update((pkg_dir / name).read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    digest = h.hexdigest()[:16]
+    _GWI_SRC_HASH_CACHE.clear()
+    _GWI_SRC_HASH_CACHE[key] = digest
+    return digest
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically (temp file in the same directory + fsync + `os.replace`)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if path.exists():
+            with contextlib.suppress(OSError):
+                os.chmod(tmp_name, path.stat().st_mode & 0o777)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
+@contextlib.contextmanager
+def _registry_lock(enabled: bool = True):
+    """Exclusive `fcntl.flock` on `<registry>.lock` spanning a whole load -> modify -> save cycle."""
+    if not enabled:
+        yield
+        return
+    reg_path = AUDIT_REGISTRY_PATH
+    reg_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = reg_path.with_name(reg_path.name + ".lock")
+    with open(lock_path, "a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
 _STARTER_VAULT_DIR = (Path(__file__).resolve().parent / "starter_vault").resolve()
 _WARNED_SWM_BIN_VALUES: set[str] = set()
 
@@ -259,6 +338,7 @@ def get_sovereign_versions() -> dict[str, str]:
         "kb_version": KB_VERSION,
         "kb_sha": kb_sha or "unknown",
         "gwi_version": GWI_STANDARD_VERSION,
+        "gwi_src_sha": compute_gwi_source_sha(),
         "swm_version": swm_version,
         "swm_sha": swm_sha_out,
         "me_kb_sha": mekb_sha_out,
@@ -388,7 +468,14 @@ def compute_subproject_fingerprint(
             tree_sha = "uncommitted"
 
         status_out = _run_git(root, "status", "--porcelain", "--", norm)
-        dirty = bool(status_out.strip())
+        # Mirror the root path: runtime evidence & passport churn under the subproject is not a code change.
+        excluded_prefixes = (f"{norm}/evidence/", f"{norm}/.swm/")
+        for line in status_out.splitlines():
+            parts_st = line.strip().split(None, 1)
+            rel_file = (parts_st[1] if len(parts_st) == 2 else line).strip().strip('"')
+            if not rel_file.startswith(excluded_prefixes):
+                dirty = True
+                break
 
     # Compute deterministic fingerprint of untracked/tracked runtime evidence & diagnostics artifacts
     ev_hasher = hashlib.sha256()
@@ -435,13 +522,29 @@ def compute_subproject_fingerprint(
 
 
 def load_audit_registry() -> dict[str, Any]:
-    if AUDIT_REGISTRY_PATH.is_file():
+    """Load the registry; a corrupt file is backed up and raises instead of silently resetting to `{}`."""
+    reg_path = AUDIT_REGISTRY_PATH
+    if reg_path.is_file():
+        raw = reg_path.read_bytes()
+        err: str | None = None
         try:
-            data = json.loads(AUDIT_REGISTRY_PATH.read_text(encoding="utf-8"))
+            data = json.loads(raw.decode("utf-8"))
             if isinstance(data, dict) and isinstance(data.get("projects"), dict):
                 return data
-        except Exception:
-            pass
+            err = "top-level object lacks a `projects` mapping"
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            err = str(exc)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = reg_path.with_name(f"{reg_path.name}.corrupt-{stamp}")
+        try:
+            shutil.copy2(reg_path, backup)
+            backup_msg = f"a copy was saved to {backup}"
+        except OSError as exc:
+            backup_msg = f"backup copy failed ({exc})"
+        raise AuditRegistryCorruptError(
+            f"Audit registry {reg_path} is corrupt ({err}); {backup_msg}. "
+            "Restore it from the backup or delete it to start a fresh registry."
+        )
     return {
         "schema_version": "1.0.0",
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -451,11 +554,11 @@ def load_audit_registry() -> dict[str, Any]:
 
 
 def save_audit_registry(registry: dict[str, Any]) -> Path:
-    AUDIT_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    reg_path = AUDIT_REGISTRY_PATH
     registry["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     registry["current_versions"] = get_sovereign_versions()
-    AUDIT_REGISTRY_PATH.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
-    return AUDIT_REGISTRY_PATH
+    _atomic_write_text(reg_path, json.dumps(registry, indent=2) + "\n")
+    return reg_path
 
 
 def _is_git_tracked(repo_root: Path, rel_path: str) -> bool:
@@ -546,7 +649,7 @@ def _update_passport_yaml_audit(repo_root: Path, project_entry: dict[str, Any], 
                         f"    swm_version: '{sp_ver.get('swm_version', '0.2.0')}'",
                     ]
                 )
-        passport_path.write_text(raw + "\n".join(lines) + "\n", encoding="utf-8")
+        _atomic_write_text(passport_path, raw + "\n".join(lines) + "\n")
     except Exception:
         pass
 
@@ -576,44 +679,16 @@ def record_gwi_audit(
     cl = report.get("craft_lenses") or {}
     now_iso = datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat(timespec="seconds")
 
-    registry = load_audit_registry()
-    proj = registry["projects"].setdefault(
-        repo_name,
-        {
-            "repo_name": repo_name,
-            "repo_root": str(repo_root),
-            "last_audit": {},
-            "triad": {
-                "ever_audited": False,
-                "audited_at": None,
-                "commit_sha": None,
-                "disposition": "UNAUDITED",
-                "fable_model": None,
-                "astra_model": None,
-            },
-            "subprojects": {},
-        },
-    )
-    proj["repo_root"] = str(repo_root)
-
-    # Ensure all discovered subprojects have at least a stub entry so `kb gwi status` shows unaudited siblings too
-    for d in discovered:
-        sp = d["subpath"]
-        if sp not in proj["subprojects"]:
-            sp_fp = compute_subproject_fingerprint(repo_root, sp, sibling_subpaths=sibling_subpaths)
-            proj["subprojects"][sp] = {
-                "subpath": sp,
-                "name": d["name"],
-                "profile": d["profile"],
-                "kind": d["kind"],
-                "audited_at": None,
-                "commit_sha": sp_fp["commit_sha"],
-                "tree_sha": None,
-                "goldwood_g": None,
-                "coupled_g": None,
-                "status": "UNAUDITED",
-                "blockers_count": None,
-                "models": [],
+    in_gate_exec = os.environ.get("GWI_IN_GATE_EXECUTION") == str(repo_root.resolve())
+    will_write = not _should_skip_default_registry_write(repo_root) and not in_gate_exec
+    with _registry_lock(enabled=will_write):
+        registry = load_audit_registry()
+        proj = registry["projects"].setdefault(
+            repo_name,
+            {
+                "repo_name": repo_name,
+                "repo_root": str(repo_root),
+                "last_audit": {},
                 "triad": {
                     "ever_audited": False,
                     "audited_at": None,
@@ -622,65 +697,100 @@ def record_gwi_audit(
                     "fable_model": None,
                     "astra_model": None,
                 },
-                "versions": {},
+                "subprojects": {},
+            },
+        )
+        proj["repo_root"] = str(repo_root)
+
+        # Ensure all discovered subprojects have at least a stub entry so `kb gwi status` shows unaudited siblings too
+        for d in discovered:
+            sp = d["subpath"]
+            if sp not in proj["subprojects"]:
+                sp_fp = compute_subproject_fingerprint(repo_root, sp, sibling_subpaths=sibling_subpaths)
+                proj["subprojects"][sp] = {
+                    "subpath": sp,
+                    "name": d["name"],
+                    "profile": d["profile"],
+                    "kind": d["kind"],
+                    "audited_at": None,
+                    "commit_sha": sp_fp["commit_sha"],
+                    "tree_sha": None,
+                    "goldwood_g": None,
+                    "coupled_g": None,
+                    "status": "UNAUDITED",
+                    "blockers_count": None,
+                    "models": [],
+                    "triad": {
+                        "ever_audited": False,
+                        "audited_at": None,
+                        "commit_sha": None,
+                        "disposition": "UNAUDITED",
+                        "fable_model": None,
+                        "astra_model": None,
+                    },
+                    "versions": {},
+                }
+
+        prev_sp = proj["subprojects"].get(subpath) or {}
+        prev_triad = (
+            prev_sp.get("triad")
+            or proj.get("triad")
+            or {
+                "ever_audited": False,
+                "audited_at": None,
+                "commit_sha": None,
+                "disposition": "UNAUDITED",
+                "fable_model": None,
+                "astra_model": None,
             }
+        )
 
-    prev_sp = proj["subprojects"].get(subpath) or {}
-    prev_triad = (
-        prev_sp.get("triad")
-        or proj.get("triad")
-        or {
-            "ever_audited": False,
-            "audited_at": None,
-            "commit_sha": None,
-            "disposition": "UNAUDITED",
-            "fable_model": None,
-            "astra_model": None,
+        base_models = list(models_used or [f"kb-gwi/{GWI_STANDARD_VERSION}"])
+        if prev_triad.get("ever_audited") and prev_triad.get("commit_sha") == fp["commit_sha"]:
+            for m_id in (
+                prev_triad.get("fable_model"),
+                prev_triad.get("astra_model"),
+                prev_triad.get("gx10_model"),
+                *(prev_triad.get("panel_models") or ()),
+            ):
+                if m_id and m_id not in base_models:
+                    base_models.append(m_id)
+
+        audit_flags = report.get("audit_flags") or {}
+        audit_record = {
+            "subpath": subpath,
+            "name": repo_name if subpath == "." else f"{repo_name}:{subpath}",
+            "profile": report.get("profile", "auto"),
+            "audited_at": now_iso,
+            "commit_sha": fp["commit_sha"],
+            "full_commit_sha": fp["full_commit_sha"],
+            "tree_sha": fp["tree_sha"],
+            "evidence_sha": fp.get("evidence_sha", ""),
+            "dirty_at_audit": fp["dirty"],
+            "strict_lenses": bool(audit_flags.get("strict_lenses", False)),
+            "probe_audio": bool(audit_flags.get("probe_audio", False)),
+            "execute_gate": bool(audit_flags.get("execute_gate", False)),
+            "theta": audit_flags.get("theta", calc.get("theta")),
+            "k": audit_flags.get("k", calc.get("k")),
+            "lens_coupled_g": cl.get("coupled_goldwood_g"),
+            "lens_veto": cl.get("veto_triggered") if cl else None,
+            "goldwood_g": calc.get("goldwood_g"),
+            "coupled_g": cl.get("coupled_goldwood_g", calc.get("goldwood_g")),
+            "status": calc.get("status", "FAIL"),
+            "blockers_count": len(report.get("blockers") or []),
+            "models": base_models,
+            "triad": prev_triad,
+            "versions": versions,
         }
-    )
 
-    base_models = list(models_used or [f"kb-gwi/{GWI_STANDARD_VERSION}"])
-    if prev_triad.get("ever_audited") and prev_triad.get("commit_sha") == fp["commit_sha"]:
-        for m_id in (
-            prev_triad.get("fable_model"),
-            prev_triad.get("astra_model"),
-            prev_triad.get("gx10_model"),
-            *(prev_triad.get("panel_models") or ()),
-        ):
-            if m_id and m_id not in base_models:
-                base_models.append(m_id)
+        proj["subprojects"][subpath] = audit_record
+        if subpath == "." or not proj.get("last_audit"):
+            proj["last_audit"] = audit_record
 
-    audit_flags = report.get("audit_flags") or {}
-    audit_record = {
-        "subpath": subpath,
-        "name": repo_name if subpath == "." else f"{repo_name}:{subpath}",
-        "profile": report.get("profile", "auto"),
-        "audited_at": now_iso,
-        "commit_sha": fp["commit_sha"],
-        "full_commit_sha": fp["full_commit_sha"],
-        "tree_sha": fp["tree_sha"],
-        "evidence_sha": fp.get("evidence_sha", ""),
-        "dirty_at_audit": fp["dirty"],
-        "strict_lenses": bool(audit_flags.get("strict_lenses", False)),
-        "probe_audio": bool(audit_flags.get("probe_audio", False)),
-        "execute_gate": bool(audit_flags.get("execute_gate", False)),
-        "goldwood_g": calc.get("goldwood_g"),
-        "coupled_g": cl.get("coupled_goldwood_g", calc.get("goldwood_g")),
-        "status": calc.get("status", "FAIL"),
-        "blockers_count": len(report.get("blockers") or []),
-        "models": base_models,
-        "triad": prev_triad,
-        "versions": versions,
-    }
-
-    proj["subprojects"][subpath] = audit_record
-    if subpath == "." or not proj.get("last_audit"):
-        proj["last_audit"] = audit_record
-
-    in_gate_exec = os.environ.get("GWI_IN_GATE_EXECUTION") == str(repo_root.resolve())
-    if not _should_skip_default_registry_write(repo_root) and not in_gate_exec:
-        save_audit_registry(registry)
-        _update_passport_yaml_audit(repo_root, proj)
+        if will_write:
+            save_audit_registry(registry)
+            _update_passport_yaml_audit(repo_root, proj)
+    if will_write:
         raw_root = str(repo_root)
         is_temp_or_test = (
             bool(os.environ.get("PYTEST_CURRENT_TEST"))
@@ -727,69 +837,71 @@ def record_triad_audit(
     now_iso = audited_at or datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat(timespec="seconds")
     c_sha = commit_sha_override or fp["commit_sha"]
 
-    registry = load_audit_registry()
-    proj = registry["projects"].setdefault(
-        repo_name,
-        {
-            "repo_name": repo_name,
-            "repo_root": str(repo_root),
-            "last_audit": {},
-            "triad": {},
-            "subprojects": {},
-        },
-    )
-    proj["repo_root"] = str(repo_root)
+    will_write = not _should_skip_default_registry_write(repo_root)
+    with _registry_lock(enabled=will_write):
+        registry = load_audit_registry()
+        proj = registry["projects"].setdefault(
+            repo_name,
+            {
+                "repo_name": repo_name,
+                "repo_root": str(repo_root),
+                "last_audit": {},
+                "triad": {},
+                "subprojects": {},
+            },
+        )
+        proj["repo_root"] = str(repo_root)
 
-    resolved_panel = (
-        list(panel_models) if panel_models is not None else [m for m in (fable_model, astra_model, gx10_model) if m]
-    )
-    triad_info = {
-        "ever_audited": True,
-        "audited_at": now_iso,
-        "commit_sha": c_sha,
-        "tree_sha": fp["tree_sha"],
-        "disposition": disposition.upper(),
-        "fable_model": fable_model,
-        "astra_model": astra_model,
-        "gx10_model": gx10_model,
-        "panel_models": resolved_panel,
-        "notes": notes,
-        "versions": versions,
-    }
-    proj["triad"] = triad_info
-
-    sp_entry = proj["subprojects"].setdefault(
-        subpath,
-        {
-            "subpath": subpath,
-            "name": repo_name if subpath == "." else f"{repo_name}:{subpath}",
-            "profile": "auto",
+        resolved_panel = (
+            list(panel_models) if panel_models is not None else [m for m in (fable_model, astra_model, gx10_model) if m]
+        )
+        triad_info = {
+            "ever_audited": True,
             "audited_at": now_iso,
             "commit_sha": c_sha,
             "tree_sha": fp["tree_sha"],
-            "goldwood_g": None,
-            "coupled_g": None,
-            "status": "PASS" if disposition.upper() == "APPROVED" else "FAIL",
-            "blockers_count": 0 if disposition.upper() == "APPROVED" else 1,
-            "models": [],
-            "triad": triad_info,
+            "disposition": disposition.upper(),
+            "fable_model": fable_model,
+            "astra_model": astra_model,
+            "gx10_model": gx10_model,
+            "panel_models": resolved_panel,
+            "notes": notes,
             "versions": versions,
-        },
-    )
-    sp_entry["triad"] = triad_info
-    models_list = list(sp_entry.get("models") or [f"kb-gwi/{GWI_STANDARD_VERSION}"])
-    for m in (fable_model, astra_model, gx10_model, *(panel_models or ())):
-        if m and m not in models_list:
-            models_list.append(m)
-    sp_entry["models"] = models_list
+        }
+        proj["triad"] = triad_info
 
-    if subpath == "." and proj.get("last_audit"):
-        proj["last_audit"]["triad"] = triad_info
-        proj["last_audit"]["models"] = models_list
+        sp_entry = proj["subprojects"].setdefault(
+            subpath,
+            {
+                "subpath": subpath,
+                "name": repo_name if subpath == "." else f"{repo_name}:{subpath}",
+                "profile": "auto",
+                "audited_at": now_iso,
+                "commit_sha": c_sha,
+                "tree_sha": fp["tree_sha"],
+                "goldwood_g": None,
+                "coupled_g": None,
+                "status": "PASS" if disposition.upper() == "APPROVED" else "FAIL",
+                "blockers_count": 0 if disposition.upper() == "APPROVED" else 1,
+                "models": [],
+                "triad": triad_info,
+                "versions": versions,
+            },
+        )
+        sp_entry["triad"] = triad_info
+        models_list = list(sp_entry.get("models") or [f"kb-gwi/{GWI_STANDARD_VERSION}"])
+        for m in (fable_model, astra_model, gx10_model, *(panel_models or ())):
+            if m and m not in models_list:
+                models_list.append(m)
+        sp_entry["models"] = models_list
 
-    if not _should_skip_default_registry_write(repo_root):
-        save_audit_registry(registry)
-        _update_passport_yaml_audit(repo_root, proj)
+        if subpath == "." and proj.get("last_audit"):
+            proj["last_audit"]["triad"] = triad_info
+            proj["last_audit"]["models"] = models_list
+
+        if will_write:
+            save_audit_registry(registry)
+            _update_passport_yaml_audit(repo_root, proj)
     return triad_info
 
 
@@ -800,8 +912,15 @@ def evaluate_subproject_freshness(
     require_strict_lenses: bool = False,
     require_probe_audio: bool = False,
     require_execute_gate: bool = False,
+    require_theta: float | None = None,
+    require_k: float | None = None,
 ) -> dict[str, Any]:
-    """Check whether `<repo_root>:<subpath>` has a valid, up-to-date audit or needs re-evaluation."""
+    """Check whether `<repo_root>:<subpath>` has a valid, up-to-date audit or needs re-evaluation.
+
+    `require_theta` / `require_k` default to the standard barrier parameters; a record audited under
+    different (or unrecorded) parameters is never FRESH. With `require_strict_lenses`, the stored
+    craft-lens coupled G must also clear the 9.0 threshold without a veto, mirroring a live run.
+    """
     root = find_git_root(repo_root)
     repo_name = root.name
     discovered = discover_subprojects(root)
@@ -837,6 +956,32 @@ def evaluate_subproject_freshness(
         or (require_execute_gate and not sp_rec.get("execute_gate", False))
     )
 
+    gwi_src_drift = bool(rec_ver.get("gwi_src_sha") != cur_versions.get("gwi_src_sha"))
+    want_theta = float(DEFAULT_THETA if require_theta is None else require_theta)
+    want_k = float(DEFAULT_K if require_k is None else require_k)
+
+    def _param_mismatch(stored: Any, wanted: float, default: float) -> bool:
+        # Reports without barrier params (synthetic/manual records) are taken as standard-default runs;
+        # pre-fix registry records are already invalidated by the `gwi_src_sha` version check.
+        if stored is None:
+            return abs(wanted - default) > 1e-9
+        try:
+            return abs(float(stored) - wanted) > 1e-9
+        except (TypeError, ValueError):
+            return True
+
+    param_drift = _param_mismatch(sp_rec.get("theta"), want_theta, DEFAULT_THETA) or _param_mismatch(
+        sp_rec.get("k"), want_k, DEFAULT_K
+    )
+    lens_fail = False
+    if require_strict_lenses:
+        lens_g = sp_rec.get("lens_coupled_g")
+        try:
+            lens_fail = lens_g is None or float(lens_g) < DEFAULT_THRESHOLD_G
+        except (TypeError, ValueError):
+            lens_fail = True
+        lens_fail = lens_fail or bool(sp_rec.get("lens_veto"))
+
     if not audited_at or not rec_tree:
         freshness = "UNAUDITED"
     elif fp["dirty"]:
@@ -845,13 +990,15 @@ def evaluate_subproject_freshness(
         freshness = "STALE_CODE"
     elif ev_sha_drift:
         freshness = "STALE_EVIDENCE"
-    elif rec_ver.get("gwi_version") != cur_versions["gwi_version"] or kb_sha_drift:
+    elif rec_ver.get("gwi_version") != cur_versions["gwi_version"] or kb_sha_drift or gwi_src_drift:
         freshness = "VERSION_DRIFT"
     elif profile_drift:
         freshness = "PROFILE_MISMATCH"
     elif strictness_drift:
         freshness = "LOWER_STRICTNESS"
-    elif rec_status != "PASS":
+    elif param_drift:
+        freshness = "PARAM_MISMATCH"
+    elif rec_status != "PASS" or lens_fail:
         freshness = "FAILED"
     else:
         freshness = "FRESH"

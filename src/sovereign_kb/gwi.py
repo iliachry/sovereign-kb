@@ -258,16 +258,29 @@ def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     out: list[Path] = []
     if not root.is_dir():
         return out
-    for p in root.rglob("*"):
-        if any(part in ignore_dirs for part in p.parts):
-            continue
-        if p.is_file() and p.suffix.lower() in suffixes:
-            out.append(p)
+    # Match ignore names against path components *below* `root` only (never the absolute prefix —
+    # a repo checked out under e.g. `~/build/` or `~/Library/` must still be scanned), and prune
+    # ignored directories instead of descending into node_modules/.venv and filtering afterwards.
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ignore_dirs]
+        base = Path(dirpath)
+        for name in filenames:
+            if name in ignore_dirs:
+                continue
+            fp = base / name
+            if fp.suffix.lower() in suffixes and fp.is_file():
+                out.append(fp)
     return sorted(out)
 
 
-def _is_test_file(path: Path) -> bool:
-    if any(part in ("tests", "test", "__tests__", "e2e") for part in path.parts):
+def _is_test_file(path: Path, root: Path | None = None) -> bool:
+    parts = path.parts
+    if root is not None:
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            pass
+    if any(part in ("tests", "test", "__tests__", "e2e") for part in parts[:-1]):
         return True
     return bool(re.search(r"(^|[._-])(test|spec)s?([._-]|$)", path.stem))
 
@@ -370,7 +383,9 @@ def evaluate_app_profile(
 
     # 1. Inspect Catalog & Walkthrough Parity (U — Instrument Usability & Feature Parity)
     cat_ids, cat_src = _extract_catalog_ids(root)
-    test_files = [p for p in _iter_source_files(root, (".ts", ".tsx", ".js", ".mjs", ".py", ".rs")) if _is_test_file(p)]
+    test_files = [
+        p for p in _iter_source_files(root, (".ts", ".tsx", ".js", ".mjs", ".py", ".rs")) if _is_test_file(p, root)
+    ]
     test_corpus = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in test_files)
     has_real_test_defs = bool(
         re.search(
@@ -598,9 +613,9 @@ def evaluate_app_profile(
     js_files = [
         p
         for p in _iter_source_files(root, (".ts", ".tsx", ".js", ".jsx", ".mjs", ".vue", ".svelte"))
-        if not _is_test_file(p)
+        if not _is_test_file(p, root)
     ]
-    py_files = [p for p in _iter_source_files(root, (".py",)) if not _is_test_file(p)]
+    py_files = [p for p in _iter_source_files(root, (".py",)) if not _is_test_file(p, root)]
     unseeded_random_hits: list[str] = []
 
     for p in js_files:
@@ -801,7 +816,7 @@ def evaluate_app_profile(
     # Scan non-test source files for hardcoded secret leaks (Lambda_conscience == 0 on secretLeaks > 0)
     secret_hit_files: list[str] = []
     for sp in src_files:
-        if _is_test_file(sp) or sp.name in ("gwi.py", "agents.py"):
+        if _is_test_file(sp, root) or sp.name in ("gwi.py", "agents.py"):
             continue
         txt = sp.read_text(encoding="utf-8", errors="ignore")
         if _SECRET_LEAK_RE.search(txt):
@@ -6188,7 +6203,7 @@ def evaluate_craft_lenses(
                 for f in (
                     _iter_source_files(root, (".py", ".ts", ".tsx", ".js", ".rs", ".sh")) if root.is_dir() else []
                 )
-                if not _is_test_file(f) and f.name not in ("gwi.py", "lenses.py", "agents.py")
+                if not _is_test_file(f, root) and f.name not in ("gwi.py", "lenses.py", "agents.py")
             ]
             src_corpus = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in src_files[:50])
             _gl_prefix = "glpat" + "-"
@@ -7451,6 +7466,7 @@ def cmd_gwi(args: argparse.Namespace) -> None:
         subs = discover_subprojects(target_path)
         sub_results: list[dict[str, Any]] = []
         any_fail = False
+        any_lens_fail = False
         any_elenchus_fail = False
         for sp in subs:
             sp_path = Path(sp["abs_path"])
@@ -7461,6 +7477,8 @@ def cmd_gwi(args: argparse.Namespace) -> None:
                 require_strict_lenses=strict_lenses,
                 require_probe_audio=probe_audio if sp["profile"] == "video" else False,
                 require_execute_gate=execute_gate if sp["profile"] in ("app", "sim") else False,
+                require_theta=theta,
+                require_k=k,
             )
             if incremental and fresh_info["is_fresh_pass"]:
                 sp_entry: dict[str, Any] = {
@@ -7500,6 +7518,9 @@ def cmd_gwi(args: argparse.Namespace) -> None:
             aud_rec = record_gwi_audit(sp_path, sp_rep)
             if sp_rep["calculation"]["status"] != "PASS":
                 any_fail = True
+            sp_cl = sp_rep.get("craft_lenses") or {}
+            if sp_cl.get("coupled_goldwood_g", 0.0) < DEFAULT_THRESHOLD_G or sp_cl.get("veto_triggered"):
+                any_lens_fail = True
             sp_entry = {
                 "subpath": sp["subpath"],
                 "name": sp["name"],
@@ -7528,6 +7549,9 @@ def cmd_gwi(args: argparse.Namespace) -> None:
             print(json.dumps({"repo_root": str(find_git_root(target_path)), "subprojects": sub_results}, indent=2))
         if (getattr(args, "strict", False) and any_fail) or any_elenchus_fail:
             sys.exit(1)
+        # Cache hits already require a passing stored lens score under --strict-lenses (is_fresh_pass).
+        if strict_lenses and any_lens_fail:
+            sys.exit(1)
         return
 
     if incremental and subcmd == "audit" and not (seal_arg or getattr(args, "write_evidence", False)):
@@ -7543,6 +7567,8 @@ def cmd_gwi(args: argparse.Namespace) -> None:
             require_strict_lenses=strict_lenses,
             require_probe_audio=probe_audio,
             require_execute_gate=execute_gate,
+            require_theta=theta,
+            require_k=k,
         )
         if fresh_info["is_fresh_pass"]:
             el_gate_inc: dict[str, Any] | None = None

@@ -22,6 +22,20 @@ import time
 from pathlib import Path
 from typing import Any
 
+RUSTC_COMPILE_TIMEOUT_S = 600
+RUST_TEST_BINARY_TIMEOUT_S = 300
+RUSTC_VERSION_TIMEOUT_S = 60
+
+
+def _run_bounded(cmd: list[str], timeout: int, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """`subprocess.run` with a timeout; a TimeoutExpired becomes a failed CompletedProcess (rc 124)."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return subprocess.CompletedProcess(cmd, 124, out, f"timed out after {timeout}s: {cmd[0]}")
+
+
 RUST_CERT_CHALLENGES: list[dict[str, str]] = [
     {
         "id": "RUST-CERT-01",
@@ -1011,12 +1025,10 @@ def run_rust_certification(
         conn = get_db_fn(vault_dir)
 
     rustc_bin = find_rustc()
-    rustc_ver = subprocess.run(
-        [rustc_bin, "--version", "--verbose"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    ver_res = _run_bounded([rustc_bin, "--version", "--verbose"], RUSTC_VERSION_TIMEOUT_S)
+    if ver_res.returncode != 0:
+        raise RuntimeError(f"rustc --version failed:\n{ver_res.stderr}")
+    rustc_ver = ver_res.stdout.strip()
     rustc_short = rustc_ver.splitlines()[0]
 
     retrieval_records: list[dict[str, Any]] = []
@@ -1067,11 +1079,9 @@ def run_rust_certification(
         import os as _os
 
         comp_env = dict(_os.environ)
-        comp = subprocess.run(
+        comp = _run_bounded(
             [rustc_bin, "--edition", "2021", "--test", "-D", "warnings", "-O", str(rs_file), "-o", str(bin_file)],
-            capture_output=True,
-            text=True,
-            check=False,
+            RUSTC_COMPILE_TIMEOUT_S,
             env=comp_env,
         )
         if comp.returncode != 0 and "tapi error" in (comp.stderr or ""):
@@ -1079,7 +1089,7 @@ def run_rust_certification(
             for cand_sdk in sorted(sdk_root_dir.glob("MacOSX26*.sdk"), reverse=True):
                 if cand_sdk.is_dir():
                     comp_env["SDKROOT"] = str(cand_sdk)
-                    comp = subprocess.run(
+                    comp = _run_bounded(
                         [
                             rustc_bin,
                             "--edition",
@@ -1092,9 +1102,7 @@ def run_rust_certification(
                             "-o",
                             str(bin_file),
                         ],
-                        capture_output=True,
-                        text=True,
-                        check=False,
+                        RUSTC_COMPILE_TIMEOUT_S,
                         env=comp_env,
                     )
                     if comp.returncode == 0:
@@ -1104,12 +1112,7 @@ def run_rust_certification(
             raise RuntimeError(f"rustc compilation failed:\n{comp.stderr}")
 
         x_t0 = time.perf_counter()
-        exec_res = subprocess.run(
-            [str(bin_file), "--test-threads=1"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        exec_res = _run_bounded([str(bin_file), "--test-threads=1"], RUST_TEST_BINARY_TIMEOUT_S)
         exec_ms = round((time.perf_counter() - x_t0) * 1000.0, 2)
         if exec_res.returncode != 0:
             raise RuntimeError(f"Rust certification suite execution failed:\n{exec_res.stdout}\n{exec_res.stderr}")

@@ -74,6 +74,7 @@ TRIVIAL_PREFIXES = (
 )
 
 SKIP_MARKERS = ("[skip-kb]", "[no-kb]", "[kb-skip]", "--skip-kb")
+HEX_TOKEN_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])")
 TICKET_RE = re.compile(r"\b(?:OP#\d+|DT-\d+|PV-[A-Z0-9-]+|FEAT-\d+|F-\d+|ISSUE-\d+|[A-Z]{2,}-\d+)\b", re.I)
 
 
@@ -101,6 +102,18 @@ def _locate_vault(override_path: str | None = None) -> Path | None:
     return None
 
 
+def _has_commit(repo: Path, sha: str) -> bool:
+    return _git(repo, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+
+
+def _base_from_remotes(repo: Path, head: str) -> str | None:
+    """Parent of the first commit reachable from `head` but from no remote-tracking ref (None if none/root)."""
+    first = _git(repo, "rev-list", "--reverse", head, "--not", "--remotes").stdout.split()
+    if not first:
+        return None
+    return _git(repo, "rev-parse", "--verify", "--quiet", f"{first[0]}^").stdout.strip() or None
+
+
 def _pre_push_ranges(repo: Path, stdin: str) -> list[tuple[str | None, str]]:
     ranges: list[tuple[str | None, str]] = []
     for line in stdin.splitlines():
@@ -108,41 +121,30 @@ def _pre_push_ranges(repo: Path, stdin: str) -> list[tuple[str | None, str]]:
         if len(parts) != 4 or parts[1] == ZERO_SHA:
             continue  # malformed or branch deletion
         lsha, rsha = parts[1], parts[3]
-        if rsha == ZERO_SHA:
-            first = _git(repo, "rev-list", "--reverse", lsha, "--not", "--remotes").stdout.split()
-            rsha = None
-            if first:
-                parent = _git(repo, "rev-parse", "--verify", "--quiet", f"{first[0]}^")
-                rsha = parent.stdout.strip() or None
+        if rsha == ZERO_SHA or not _has_commit(repo, rsha):
+            # New branch, or remote tip not present locally (e.g. unfetched force-push): use the
+            # `--not --remotes` range; get_commits_in_range re-derives it when this is None.
+            rsha = _base_from_remotes(repo, lsha)
         ranges.append((rsha, lsha))
     return ranges
 
 
 def get_commits_in_range(repo: Path, base: str | None, head: str) -> list[tuple[str, str]]:
-    """Returns list of (short_sha, subject) being pushed."""
-    if base and base != ZERO_SHA:
-        cmd = ["log", "--no-merges", "--oneline", f"{base}..{head}"]
-    else:
-        # Check commits not in remotes
-        unpushed = _git(repo, "rev-list", "--no-merges", "--reverse", head, "--not", "--remotes").stdout.splitlines()
-        if unpushed:
-            commits = []
-            for sha in unpushed:
-                subj = _git(repo, "log", "-1", "--format=%s", sha).stdout.strip()
-                commits.append((sha[:8], subj))
-            return commits
-        cmd = ["log", "--no-merges", "-n", "10", "--oneline", head]
+    """Returns list of (full_sha, subject) being pushed.
 
-    out = _git(repo, *cmd).stdout.strip()
-    if not out:
-        return []
-    res = []
-    for line in out.splitlines():
-        parts = line.split(" ", 1)
-        sha = parts[0]
-        subj = parts[1] if len(parts) > 1 else ""
-        res.append((sha, subj))
-    return res
+    With no usable base (None, zero SHA, or a SHA absent from the local object store), the range is
+    every commit reachable from `head` but from no remote-tracking ref. If that is empty, everything is
+    already on a remote and nothing is being pushed (no `log -n 10` fallback).
+    """
+    if base and base != ZERO_SHA and _has_commit(repo, base):
+        shas = _git(repo, "rev-list", "--no-merges", "--reverse", f"{base}..{head}").stdout.split()
+    else:
+        shas = _git(repo, "rev-list", "--no-merges", "--reverse", head, "--not", "--remotes").stdout.split()
+    commits = []
+    for sha in shas:
+        subj = _git(repo, "log", "-1", "--format=%s", sha).stdout.strip()
+        commits.append((sha.lower(), subj))
+    return commits
 
 
 def check_kb_reflection(
@@ -151,6 +153,7 @@ def check_kb_reflection(
     head: str,
     vault_path: Path | None = None,
     strict: bool = True,
+    today: datetime.date | None = None,
 ) -> tuple[bool, str, list[str]]:
     """
     Checks if the commits in base..head are reflected in me-kb.
@@ -170,7 +173,7 @@ def check_kb_reflection(
     # 3. Check for skip markers or pure trivial chores
     all_skip = True
     all_trivial = True
-    for sha, subj in commits:
+    for _sha, subj in commits:
         subj_lower = subj.lower()
         if not any(marker in subj_lower for marker in SKIP_MARKERS):
             all_skip = False
@@ -189,7 +192,7 @@ def check_kb_reflection(
         return True, f"[kb-check] {repo_name}: me-kb vault not found on local system (check bypassed)", []
 
     # 5. Load today's log, yesterday's log, and now.md
-    today = datetime.date.today()
+    today = today or datetime.date.today()
     yesterday = today - datetime.timedelta(days=1)
     today_file = vault / "04-episodic" / f"{today.isoformat()}-log.md"
     yesterday_file = vault / "04-episodic" / f"{yesterday.isoformat()}-log.md"
@@ -211,17 +214,10 @@ def check_kb_reflection(
         )
 
     # 6. Extract search patterns
-    # Primary repo variants: exact name, normalized slugs, and anchor prefix (e.g. "acme-platform" -> "acme")
+    # Repo variants: the exact name and its `_` / space spellings only. A bare first word
+    # (e.g. "sovereign" for "sovereign-kb") matches unrelated log text and made the gate vacuous.
     full_lower = repo_name.lower()
     repo_variants = {full_lower, full_lower.replace("-", "_"), full_lower.replace("-", " ")}
-    parts = full_lower.split("-")
-    if (
-        len(parts) > 1
-        and len(parts[0]) >= 4
-        and parts[0] not in GENERIC_STOPWORDS
-        and parts[0] not in {"test", "mock", "demo", "temp"}
-    ):
-        repo_variants.add(parts[0])
 
     commit_shas = {sha.lower() for sha, _ in commits}
     tickets = set()
@@ -254,10 +250,11 @@ def check_kb_reflection(
             if matched_target:
                 break
 
-            # Check commit SHAs
-            for sha in commit_shas:
-                if sha in line_lower:
-                    matched_target = f"commit sha '{sha}'"
+            # Check commit SHAs: any hex token (>= 7 chars, e.g. `%h`) that prefixes a pushed full SHA
+            for tok in HEX_TOKEN_RE.findall(line_lower):
+                sha = next((s_ for s_ in commit_shas if s_.startswith(tok)), None)
+                if sha:
+                    matched_target = f"commit sha '{tok}'"
                     matched_file = fpath
                     matched_line_no = idx
                     matched_line_text = line.strip()
@@ -288,7 +285,7 @@ def check_kb_reflection(
         )
 
     # 8. No match found
-    commit_summary = [f"  • {sha} {subj}" for sha, subj in commits[:5]]
+    commit_summary = [f"  • {sha[:8]} {subj}" for sha, subj in commits[:5]]
     if len(commits) > 5:
         commit_summary.append(f"  • ... and {len(commits) - 5} more commit(s)")
 

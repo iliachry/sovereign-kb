@@ -28,6 +28,7 @@ import base64
 import datetime
 import difflib
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -811,6 +812,15 @@ def classify_model_lineage(model_id: str) -> str:
     return f"other:{sanitized}" if sanitized else "unknown"
 
 
+def _normalize_execution_status(raw: Any) -> str:
+    """
+    Fail-closed reviewer execution status: a missing/empty status (legacy records that carry a real verdict)
+    or an explicit `OK` is `OK`; every other value (`FAILED`, `TIMEOUT`, `ERROR`, `CANCELLED`, ...) is `FAILED`.
+    """
+    st = str(raw if raw is not None else "").strip().upper()
+    return "OK" if st in ("", "OK") else "FAILED"
+
+
 def compute_effective_panel_size(
     models: list[str | dict[str, Any]],
     failed_models: set[str] | list[str] | None = None,
@@ -830,7 +840,7 @@ def compute_effective_panel_size(
     for item in models:
         if isinstance(item, dict):
             m_str = str(item.get("model_id") or item.get("model") or "").strip()
-            exec_st = str(item.get("execution_status") or "OK").strip().upper()
+            exec_st = _normalize_execution_status(item.get("execution_status"))
         else:
             m_str = str(item or "").strip()
             exec_st = "FAILED" if m_str in failed_set else "OK"
@@ -1463,6 +1473,15 @@ def _format_untracked_hunk(repo_root: Path, rel_posix: str, max_bytes: int = 327
 
 _GIT_DIFF_PIN_ARGS = ("-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.context=3")
 
+# Pathspec exclusions applied to every git diff/show/ls-files call that feeds the bound diff digest, so that
+# writing or committing receipt artifacts (`evidence/elenchus_challenge.json`, `goldwood.json`, `*.evr`, ...)
+# never perturbs the reconstructed diff between challenge time and gate time. Mirrors `_is_skipped_evidence_path`.
+_RECEIPT_EXCLUDE_PATHSPECS: tuple[str, ...] = (
+    "--",
+    *(f":(exclude,glob)**/evidence/**/{name}" for name in sorted(_RECEIPT_BASENAMES)),
+    ":(exclude,glob)**/evidence/**/*.evr",
+)
+
 
 def _extract_numstat_opaque_paths(numstat_out: str) -> list[str]:
     opaque: list[str] = []
@@ -1589,9 +1608,18 @@ def _collect_bounded_diff(
                 "--no-color",
                 "--no-renames",
                 "HEAD",
+                *_RECEIPT_EXCLUDE_PATHSPECS,
             )
             rc_ns, ns_out = _run_git_cmd(
-                repo_root, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"
+                repo_root,
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "HEAD",
+                *_RECEIPT_EXCLUDE_PATHSPECS,
             )
             if rc_d != 0 or rc_ns != 0:
                 diff_cmd_failed = True
@@ -1603,7 +1631,14 @@ def _collect_bounded_diff(
                         opaque_paths.append(op)
         else:
             rc_c, c_out = _run_git_cmd(
-                repo_root, *_GIT_DIFF_PIN_ARGS, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames"
+                repo_root,
+                *_GIT_DIFF_PIN_ARGS,
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--no-renames",
+                *_RECEIPT_EXCLUDE_PATHSPECS,
             )
             rc_s_cached, s_cached_out = _run_git_cmd(
                 repo_root,
@@ -1614,12 +1649,28 @@ def _collect_bounded_diff(
                 "--no-textconv",
                 "--no-color",
                 "--no-renames",
+                *_RECEIPT_EXCLUDE_PATHSPECS,
             )
             rc_ns_w, ns_w = _run_git_cmd(
-                repo_root, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-renames"
+                repo_root,
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                *_RECEIPT_EXCLUDE_PATHSPECS,
             )
             rc_ns_c, ns_c = _run_git_cmd(
-                repo_root, "diff", "--cached", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-renames"
+                repo_root,
+                "diff",
+                "--cached",
+                "--numstat",
+                "-z",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                *_RECEIPT_EXCLUDE_PATHSPECS,
             )
             if rc_c != 0 or rc_s_cached != 0 or rc_ns_w != 0 or rc_ns_c != 0:
                 diff_cmd_failed = True
@@ -1657,7 +1708,9 @@ def _collect_bounded_diff(
                 else:
                     any_untracked_truncated = True
 
-        rc_u, u_out = _run_git_cmd(repo_root, "ls-files", "-z", "--others", "--exclude-standard")
+        rc_u, u_out = _run_git_cmd(
+            repo_root, "ls-files", "-z", "--others", "--exclude-standard", *_RECEIPT_EXCLUDE_PATHSPECS
+        )
         if rc_u != 0:
             diff_cmd_failed = True
         elif u_out:
@@ -1688,9 +1741,18 @@ def _collect_bounded_diff(
             "--no-color",
             "--no-renames",
             "HEAD",
+            *_RECEIPT_EXCLUDE_PATHSPECS,
         )
         rc_ns_h, ns_h = _run_git_cmd(
-            repo_root, "show", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--format=", "HEAD"
+            repo_root,
+            "show",
+            "--numstat",
+            "-z",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--format=",
+            "HEAD",
+            *_RECEIPT_EXCLUDE_PATHSPECS,
         )
         if rc_s != 0 or rc_ns_h != 0:
             diff_cmd_failed = True
@@ -1705,7 +1767,9 @@ def _collect_bounded_diff(
                     diff_text = (diff_text.rstrip("\n") + "\n" if diff_text else "") + syn
                 else:
                     any_untracked_truncated = True
-        rc_n, n_out = _run_git_cmd(repo_root, "show", "-z", "--name-only", "--format=", "HEAD")
+        rc_n, n_out = _run_git_cmd(
+            repo_root, "show", "-z", "--name-only", "--format=", "HEAD", *_RECEIPT_EXCLUDE_PATHSPECS
+        )
         if rc_n == 0:
             for ln in n_out.split("\0"):
                 if not ln:
@@ -3070,7 +3134,7 @@ def synthesize_elenchus_verdict(
         if not isinstance(r, dict):
             raise ValueError("Malformed reviewer record: expected dict.")
         mid = str(r.get("model_id") or r.get("model") or "unknown").strip()
-        raw_exec_st = str(r.get("execution_status") or "OK").strip().upper()
+        raw_exec_st = _normalize_execution_status(r.get("execution_status"))
         if "raw_text" in r and "findings" not in r:
             nr = parse_reviewer_output(mid, str(r["raw_text"]))
             if raw_exec_st == "FAILED":
@@ -3088,7 +3152,7 @@ def synthesize_elenchus_verdict(
                 "model_id": mid,
                 "lineage": classify_model_lineage(mid),
                 "verdict": _normalize_verdict(str(r.get("verdict") or ""), norm_f),
-                "execution_status": raw_exec_st if raw_exec_st in ("OK", "FAILED") else "OK",
+                "execution_status": raw_exec_st,
                 "summary": str(r.get("summary") or "").strip(),
                 "findings": norm_f,
             }
@@ -3574,8 +3638,15 @@ def _query_openai_compat_reviewer(model_id: str, url: str, prompt: str, timeout:
             raise ValueError("HTTP endpoint response lacks `choices` completion payload.")
         rev = parse_reviewer_output(model_id, content, extra_secrets=url_secrets)
         return _scrub_review_dict(rev, url_secrets)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError) as exc:
-        safe_exc = _redact_sensitive_text(str(exc), url_secrets)[:240]
+    except (
+        OSError,
+        urllib.error.URLError,
+        http.client.HTTPException,
+        json.JSONDecodeError,
+        TimeoutError,
+        ValueError,
+    ) as exc:
+        safe_exc = _redact_sensitive_text(str(exc) or type(exc).__name__, url_secrets)[:240]
         failed_rev = {
             "model_id": model_id,
             "lineage": classify_model_lineage(model_id),
@@ -3692,7 +3763,7 @@ def _record_triad_from_elenchus(target_dir: Path, subpath: str, receipt: dict[st
         if isinstance(m, dict)
         and m.get("model_id")
         and m.get("lineage") != "deterministic"
-        and str(m.get("execution_status") or "OK").upper() != "FAILED"
+        and _normalize_execution_status(m.get("execution_status")) != "FAILED"
     ]
     actual_models = [str(m["model_id"]) for m in ok_models]
     fable_m = next((m["model_id"] for m in ok_models if m.get("lineage") == "anthropic"), None)
@@ -3981,11 +4052,14 @@ def adjudicate_elenchus_finding(
     reason: str = "",
     adjudicator: str = "human-operator",
     ledger_file: Path | None = None,
+    override: bool = False,
 ) -> dict[str, Any]:
     """
     Record an explicit human adjudication (`accept`, `reject`, `escalate`) on a disputed Elenchus cluster.
     Enforces Law L10 anti-rubber-stamp guardrails (`reason >= 12 chars` on reject, no bulk `ALL` reject when
-    multiple pending clusters exist, and strict worktree freshness check).
+    multiple pending clusters exist, and strict worktree freshness check). A cluster already adjudicated
+    `ACCEPT_FINDING`/`ESCALATE` cannot be changed unless `override=True`; overrides are recorded in the
+    cluster's adjudication `history`.
     """
     from .bridge import append_triad_provenance_event
 
@@ -4086,24 +4160,50 @@ def adjudicate_elenchus_finding(
         targets = [c for c in clusters if str(c.get("cluster_id", "")).upper() == fid_clean.upper()]
         if not targets:
             raise ValueError(f"Unknown Elenchus cluster ID '{fid_clean}'.")
+        for c in targets:
+            prev_adj = c.get("adjudication") if isinstance(c.get("adjudication"), dict) else {}
+            prev_dec = str(prev_adj.get("decision") or "").upper()
+            if (
+                str(prev_adj.get("status") or "") == "ADJUDICATED"
+                and prev_dec in ("ACCEPT_FINDING", "ESCALATE")
+                and prev_dec != norm_decision
+                and not override
+            ):
+                raise ValueError(
+                    f"Elenchus cluster '{c.get('cluster_id')}' was already adjudicated {prev_dec}; refusing to change it "
+                    f"to {norm_decision} without an explicit override (`override=True` / `--override`)."
+                )
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat(timespec="seconds")
     adj_name = (adjudicator or "").strip() or "human-operator"
     for c in targets:
-        c["adjudication"] = {
+        prev_adj = c.get("adjudication") if isinstance(c.get("adjudication"), dict) else {}
+        history = [h for h in (prev_adj.get("history") or []) if isinstance(h, dict)]
+        is_override = False
+        if str(prev_adj.get("status") or "") == "ADJUDICATED":
+            prev_dec = str(prev_adj.get("decision") or "").upper()
+            is_override = prev_dec in ("ACCEPT_FINDING", "ESCALATE") and prev_dec != norm_decision
+            history.append({k: v for k, v in prev_adj.items() if k != "history"})
+        new_adj: dict[str, Any] = {
             "status": "ADJUDICATED",
             "decision": norm_decision,
             "adjudicator": adj_name,
             "reason": clean_reason,
             "adjudicated_at": now_iso,
         }
+        if is_override:
+            new_adj["override"] = True
+            new_adj["overridden_decision"] = str(prev_adj.get("decision") or "").upper()
+        if history:
+            new_adj["history"] = history
+        c["adjudication"] = new_adj
 
     reviewer_summaries = receipt.get("reviewer_summaries") or []
     panel = compute_effective_panel_size(reviewer_summaries)
     receipt["panel"] = panel
     llm_verdicts = [
         "CHALLENGE"
-        if str(r.get("execution_status") or "OK").upper() == "FAILED"
+        if _normalize_execution_status(r.get("execution_status")) == "FAILED"
         else str(r.get("verdict") or "CHALLENGE")
         for r in reviewer_summaries
         if str(r.get("lineage") or "") != "deterministic"
@@ -4128,6 +4228,7 @@ def adjudicate_elenchus_finding(
             "finding_id": fid_clean.upper() if fid_clean.upper() == "ALL" else targets[0]["cluster_id"],
             "decision": norm_decision,
             "adjudicator": adj_name,
+            "override": bool(any((c.get("adjudication") or {}).get("override") for c in targets)),
             "seal_status": new_seal_status,
             "tree_sha": fp["tree_sha"],
         },
@@ -4850,7 +4951,7 @@ def evaluate_elenchus_gate(
 
     llm_verdicts = [
         "CHALLENGE"
-        if str(r.get("execution_status") or "OK").upper() == "FAILED"
+        if _normalize_execution_status(r.get("execution_status")) == "FAILED"
         else str(r.get("verdict") or "CHALLENGE").upper()
         for r in reviewer_summaries
         if classify_model_lineage(str(r.get("model_id") or "")) != "deterministic"
@@ -4981,6 +5082,11 @@ def register_elenchus_subparser(subparsers: Any, show_all_aliases: bool = False)
     p.add_argument("--decision", default="", help="Human decision (`accept`, `reject`, `escalate`) for `adjudicate`")
     p.add_argument("--reason", default="", help="Explicit human rationale (>= 12 chars required for `reject`)")
     p.add_argument("--by", default="human-operator", help="Human adjudicator identifier")
+    p.add_argument(
+        "--override",
+        action="store_true",
+        help="Allow `adjudicate` to change a cluster already adjudicated accept/escalate (recorded in history)",
+    )
     p.add_argument("--strict", action="store_true", help="Exit with code 1 if gate does not pass")
     p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
@@ -5065,6 +5171,7 @@ def cmd_elenchus(args: argparse.Namespace) -> None:
                 decision=str(getattr(args, "decision", "") or ""),
                 reason=str(getattr(args, "reason", "") or ""),
                 adjudicator=str(getattr(args, "by", "human-operator") or "human-operator"),
+                override=bool(getattr(args, "override", False)),
             )
         except (ValueError, FileNotFoundError, OSError) as exc:
             if as_json:

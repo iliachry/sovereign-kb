@@ -202,6 +202,8 @@ Also included in every full starter vault (`src/sovereign_kb/starter_vault/02-op
 | `KB_EMBED_URL` | `http://127.0.0.1:11434/api/embeddings` | Primary Ollama embeddings HTTP endpoint |
 | `KB_CHAT_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Primary OpenAI-compatible chat endpoint for `skb ask` |
 | `KB_OLLAMA_URL` | `http://127.0.0.1:11434/v1/chat/completions` | Fallback Ollama chat endpoint for `skb ask` |
+| `SKB_EVR_SIGN_KEY` | unset → public demo key (warns; `signature_trust: public-demo-key`) | HMAC key for sealing and verifying `.evr` capsules. A capsule signed with the public demo key proves nothing about who sealed it — set your own key for real provenance; `evr verify --require-signature` exits 1 if a signed capsule cannot be checked |
+| `SWM_AUDIT_REGISTRY` | `~/.swm/audit_registry.json` | Path to the GWI audit registry (atomic writes, `flock`-guarded; a corrupt file is backed up to `*.corrupt-<ts>` and reported instead of being reset) |
 
 ---
 

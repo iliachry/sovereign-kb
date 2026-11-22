@@ -175,7 +175,6 @@ _STOP_CALLS = frozenset(
         "read",
         "write",
         "get",
-        "set",
         "pop",
         "append",
         "extend",
@@ -1057,6 +1056,23 @@ def run_ast_mutation_probe(
         if mut_file_path.is_symlink():
             mut_file_path.unlink()
             mut_file_path.write_text(source, encoding="utf-8")
+        # A symlinked PARENT directory (copied with symlinks=True) would let the mutant write through
+        # into an external file outside the sandbox: refuse instead of mutating.
+        tmp_root_resolved = tmp_root.resolve()
+        try:
+            mut_file_path.resolve().relative_to(tmp_root_resolved)
+        except ValueError:
+            return {
+                "target_root": str(root_dir),
+                "target_file": rel_chosen,
+                "mutants_tested": 0,
+                "mutants_killed": 0,
+                "mutants_survived": 0,
+                "mutation_kill_ratio": 0.0,
+                "status": "UNSAFE_SYMLINK_TARGET",
+                "passed": False,
+                "details": [],
+            }
 
         env = dict(os.environ)
         src_dir = tmp_root / "src"
@@ -1103,36 +1119,44 @@ def run_ast_mutation_probe(
                 "details": [],
             }
 
-        for m_idx, desc, m_code in mutants:
-            mut_file_path.write_text(m_code, encoding="utf-8")
-            outcome = "survived"
-            try:
-                res = subprocess.run(
-                    cmd,
-                    cwd=str(tmp_root),
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_per_mutant,
-                    check=False,
-                )
-                if res.returncode == 1:
+        try:
+            for m_idx, desc, m_code in mutants:
+                mut_file_path.write_text(m_code, encoding="utf-8")
+                outcome = "survived"
+                try:
+                    res = subprocess.run(
+                        cmd,
+                        cwd=str(tmp_root),
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_per_mutant,
+                        check=False,
+                    )
+                    if res.returncode == 1:
+                        is_killed = True
+                        outcome = "killed"
+                    elif res.returncode == 2:
+                        # Collection/import error introduced by the mutant (baseline collected and passed
+                        # with rc == 0 above), so the mutant broke the module: killed.
+                        is_killed = True
+                        outcome = "collection_error_killed"
+                    elif res.returncode == 0:
+                        is_killed = False
+                        outcome = "survived"
+                    else:
+                        is_killed = False
+                        outcome = f"infra_error_rc_{res.returncode}"
+                except subprocess.TimeoutExpired:
                     is_killed = True
-                    outcome = "killed"
-                elif res.returncode == 0:
-                    is_killed = False
-                    outcome = "survived"
+                    outcome = "timeout_killed"
+                if is_killed:
+                    killed += 1
                 else:
-                    is_killed = False
-                    outcome = f"infra_error_rc_{res.returncode}"
-            except subprocess.TimeoutExpired:
-                is_killed = True
-                outcome = "timeout_killed"
-            if is_killed:
-                killed += 1
-            else:
-                survived += 1
-            details.append({"mutant_index": m_idx, "mutation": desc, "killed": is_killed, "outcome": outcome})
+                    survived += 1
+                details.append({"mutant_index": m_idx, "mutation": desc, "killed": is_killed, "outcome": outcome})
+        finally:
+            mut_file_path.write_text(source, encoding="utf-8")
 
     total = killed + survived
     kill_ratio = round(killed / max(1, total), 4)
@@ -1430,7 +1454,7 @@ def compile_organon_prompts(
                 blockers = payload.get("blockers") or payload.get("structured_blockers") or []
                 if isinstance(blockers, list):
                     for b in blockers:
-                        b_text = (b.get("description", str(b)) if isinstance(b, dict) else str(b))[:200]
+                        b_text = (str(b.get("description") or b) if isinstance(b, dict) else str(b))[:200]
                         if b_text and b_text not in negative_guardrails:
                             negative_guardrails.append(b_text)
 
@@ -1695,6 +1719,37 @@ MAX_WEBXR_SPLATS = 500_000
 MAX_COMPANION_SPLAT_BYTES = 20_000_000
 
 
+_PLY_TYPE_SIZES = {
+    "char": 1, "uchar": 1, "int8": 1, "uint8": 1,
+    "short": 2, "ushort": 2, "int16": 2, "uint16": 2,
+    "int": 4, "uint": 4, "float": 4, "int32": 4, "uint32": 4, "float32": 4,
+    "double": 8, "float64": 8,
+}  # fmt: skip
+
+
+def _ply_vertex_stride(head_text: str) -> int | None:
+    """Byte stride of one `vertex` element in a binary PLY header, or None when not computable
+    (list properties, unknown scalar types, or no vertex element)."""
+    stride = 0
+    in_vertex = False
+    seen_vertex = False
+    for raw in head_text.splitlines():
+        parts = raw.split()
+        if not parts:
+            continue
+        if parts[0] == "element":
+            in_vertex = len(parts) >= 2 and parts[1] == "vertex"
+            seen_vertex = seen_vertex or in_vertex
+            continue
+        if in_vertex and parts[0] == "property":
+            if len(parts) >= 2 and parts[1] == "list":
+                return None
+            if len(parts) < 3 or parts[1].lower() not in _PLY_TYPE_SIZES:
+                return None
+            stride += _PLY_TYPE_SIZES[parts[1].lower()]
+    return stride if seen_vertex and stride > 0 else None
+
+
 def parse_splat_asset_header(asset_path: Path) -> dict[str, Any]:
     """
     Parses a `.ply` (ASCII or binary header), `.splat` (32 bytes/gaussian), `.ksplat`, or `.spz`
@@ -1730,8 +1785,17 @@ def parse_splat_asset_header(asset_path: Path) -> dict[str, Any]:
             m_vert = re.search(r"element\s+vertex\s+(\d+)", head_text)
             if m_vert:
                 gaussian_count = int(m_vert.group(1))
-                # Verify payload is non-empty and not truncated below minimum vertex stride (4 bytes/vertex min)
-                if gaussian_count <= 0 or payload_bytes < min(gaussian_count * 4, 64):
+                fmt_m = re.search(r"^\s*format\s+(\S+)", head_text, re.MULTILINE)
+                ply_format = fmt_m.group(1).lower() if fmt_m else "ascii"
+                stride = _ply_vertex_stride(head_text) if ply_format.startswith("binary_") else None
+                if gaussian_count <= 0:
+                    corrupt_or_truncated = True
+                elif stride is not None:
+                    # Binary PLY: payload must hold count * per-vertex stride bytes
+                    if payload_bytes < gaussian_count * stride:
+                        corrupt_or_truncated = True
+                elif payload_bytes < min(gaussian_count * 4, 64):
+                    # ASCII or list-property PLY: lenient non-empty check
                     corrupt_or_truncated = True
             else:
                 corrupt_or_truncated = True
