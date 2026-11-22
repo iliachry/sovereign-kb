@@ -175,7 +175,6 @@ _STOP_CALLS = frozenset(
         "read",
         "write",
         "get",
-        "set",
         "pop",
         "append",
         "extend",

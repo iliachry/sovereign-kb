@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Union
-
 from .ast_nodes import (
     AttrValueTest,
     Condition,
@@ -207,7 +205,7 @@ class SoarParser:
 
         self.consume("-->")
 
-        actions: list[Union[RHSAction, RHSFunctionStandalone]] = []
+        actions: list[RHSAction | RHSFunctionStandalone] = []
         while self.peek() is not None and self.peek() != "}":
             actions.extend(self.parse_rhs_item())
 
@@ -362,7 +360,7 @@ class SoarParser:
         tok = self.peek()
         if tok == "<<":
             self.consume("<<")
-            opts: list[Union[str, int, float]] = []
+            opts: list[str | int | float] = []
             while self.peek() is not None and self.peek() != ">>":
                 atom = _parse_atom(self.consume())
                 if isinstance(atom, Var):
@@ -380,7 +378,7 @@ class SoarParser:
         target = _parse_atom(self.consume())
         return EqualityTest(target=target)
 
-    def parse_rhs_item(self) -> list[Union[RHSAction, RHSFunctionStandalone]]:
+    def parse_rhs_item(self) -> list[RHSAction | RHSFunctionStandalone]:
         self.consume("(")
         first = self.peek()
         if first in ("write", "halt", "crlf"):
@@ -389,7 +387,7 @@ class SoarParser:
             return [RHSFunctionStandalone(call=call)]
 
         id_sym = _parse_atom(self.consume())
-        actions: list[Union[RHSAction, RHSFunctionStandalone]] = []
+        actions: list[RHSAction | RHSFunctionStandalone] = []
 
         while self.peek() is not None and self.peek() != ")":
             attr_tok = self.consume()
@@ -440,7 +438,7 @@ class SoarParser:
 
     def _parse_func_body(self) -> RHSFuncCall:
         func_name = self.consume()
-        args: list[Union[Symbol, RHSFuncCall]] = []
+        args: list[Symbol | RHSFuncCall] = []
         while self.peek() is not None and self.peek() != ")":
             if self.peek() == "(":
                 self.consume("(")

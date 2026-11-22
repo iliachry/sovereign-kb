@@ -15,7 +15,7 @@ $$\mathcal{G}(\mathbf{S}) = \left( \sum_{i=1}^4 \alpha_i \mathcal{S}_i \right) \
 
 ## 1. The 5 Domain Evaluation Profiles (`app`, `sim`, `video`, `paper`, `kb`) & 8 Bi-Polar Specialist Craft Lenses (4 *Verga* + 4 *Chrysos*)
 
-| Lens ID | Pole & Profiles | Primary Deterministic Artifact Probes (`src/sovereign_kb/gwi.py`) | Hard Veto Threshold | Required Contact Sheet / Evidence |
+| Lens ID | Pole & Profiles | Primary Deterministic Artifact Probes (`src/sovereign_kb/gwi/`) | Hard Veto Threshold | Required Contact Sheet / Evidence |
 | :--- | :--- | :--- | :--- | :--- |
 | **`technical-artist`** | *Verga* (`app` 3D, `sim`) | `renderer.info` (`draws <= 180`), frame `p95 <= 16.6ms`, KTX2/Draco compression, camera $\notin$ mesh AABB, Rec.709 luminance ($\mu_Y \in [18, 215], \sigma_Y \ge 14$), Sobel edge & 6-tile MSE | `draws > 300`, `p95 > 33.3ms`, black/blown canvas, or unseeded `Math.random()` | 6-Pose Canonical Orbit Sheet (`1920x1080`) |
 | **`ux-ergonomics`** | *Verga* (`app`, `sim` HUD) | 2D HUD $\cap$ 3D canvas occlusion ($\le 18\%$), linearized WCAG 2.1 contrast ($\ge 4.5:1$), `0px` horizontal overflow across `390/768/1440px`, and **Subtractive Laws (`L0`–`L8`)** | HUD occlusion $> 25\%$, contrast $< 4.5:1$, `headerRows > 1`, `expandedTablesVisible > 1`, `controls > 36` ($S_{L8}$), or `edge_density > 0.36` | 3-Viewport Responsive Sheet (`390` / `768` / `1440px`) |

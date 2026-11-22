@@ -45,6 +45,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
+  "mypy>=1.11.0",
   "pytest>=8.0.0",
   "ruff>=0.6.0",
 ]
@@ -69,8 +70,13 @@ line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "UP", "B", "W"]
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

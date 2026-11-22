@@ -1,0 +1,31 @@
+name: Sovereign KB CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Sync dev dependencies
+        run: uv sync --extra dev --frozen
+      - name: Lint and format check
+        run: |
+          uv run --extra dev ruff check .
+          uv run --extra dev ruff format --check .
+      - name: Static type check
+        run: uv run --extra dev mypy src/sovereign_kb
+      - name: Run deterministic test suite
+        env:
+          PYTHONHASHSEED: "42"
+        run: uv run --extra dev pytest -q
+      - name: Run Goldwood Index self-audit
+        run: uv run python -m sovereign_kb.gwi audit . --strict

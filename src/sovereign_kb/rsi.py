@@ -25,8 +25,9 @@ import json
 import math
 import re
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from sovereign_kb.retrieval import invoke_hybrid_retrieve
 

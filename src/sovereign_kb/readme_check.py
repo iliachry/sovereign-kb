@@ -304,13 +304,14 @@ def _pre_push_ranges(repo: Path, stdin: str) -> list[tuple[str | None, str]]:
         if len(parts) != 4 or parts[1] == ZERO_SHA:
             continue  # malformed or branch deletion
         lsha, rsha = parts[1], parts[3]
+        base_sha: str | None = rsha
         if rsha == ZERO_SHA:
             first = _git(repo, "rev-list", "--reverse", lsha, "--not", "--remotes").stdout.split()
-            rsha = None
+            base_sha = None
             if first:
                 parent = _git(repo, "rev-parse", "--verify", "--quiet", f"{first[0]}^")
-                rsha = parent.stdout.strip() or None
-        ranges.append((rsha, lsha))
+                base_sha = parent.stdout.strip() or None
+        ranges.append((base_sha, lsha))
     return ranges
 
 
