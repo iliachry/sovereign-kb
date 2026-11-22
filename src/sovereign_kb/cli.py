@@ -606,6 +606,43 @@ _EMBED_QUERY_CACHE: OrderedDict[tuple[str, tuple[str, ...], int, str], tuple[flo
 _EMBED_QUERY_CACHE_MAX = 512
 
 
+def unit_vector_blob(raw: bytes | bytearray | str | list[float] | None) -> bytes | None:
+    """Return a unit-normalized float32 BLOB, or None for malformed/non-finite/zero vectors.
+
+    `.kb/index.db` is shared with me-kb's `kb_cli.py` (schema v3), which requires every
+    stored embedding to have norm 1. Raw Ollama vectors are not normalized.
+    """
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            if not raw or len(raw) % 4:
+                return None
+            arr = array.array("f", bytes(raw))
+        elif isinstance(raw, str):
+            floats = json.loads(raw)
+            if not isinstance(floats, list) or not floats:
+                return None
+            arr = array.array("f", floats)
+        elif isinstance(raw, list):
+            if not raw:
+                return None
+            arr = array.array("f", raw)
+        else:
+            return None
+    except (ValueError, TypeError):
+        return None
+    if not all(math.isfinite(x) for x in arr):
+        return None
+    norm_sq = sum(x * x for x in arr)
+    if not math.isfinite(norm_sq) or norm_sq <= 1e-12:
+        return None
+    norm = math.sqrt(norm_sq)
+    if abs(norm - 1.0) > 1e-4:
+        arr = array.array("f", [x / norm for x in arr])
+    return arr.tobytes()
+
+
 def get_embedding(text: str) -> list[float] | None:
     global _ACTIVE_EMBED_URL, _EMBED_CIRCUIT_OPEN
     if os.environ.get("KB_NO_EMBED") == "1" or _EMBED_CIRCUIT_OPEN:
@@ -991,15 +1028,7 @@ def cmd_sync(args) -> None:
             raw_emb = r["embedding"]
             if raw_emb is None:
                 continue
-            if isinstance(raw_emb, (bytes, bytearray)):
-                blob_emb = bytes(raw_emb)
-            elif isinstance(raw_emb, str):
-                try:
-                    blob_emb = array.array("f", json.loads(raw_emb)).tobytes()
-                except Exception:
-                    blob_emb = None
-            else:
-                blob_emb = None
+            blob_emb = unit_vector_blob(raw_emb)
             if blob_emb:
                 sha = hashlib.sha256(r["content"].encode("utf-8")).hexdigest()
                 temp_vec_cache[(rel_path, sha)] = blob_emb
@@ -1039,18 +1068,11 @@ def cmd_sync(args) -> None:
             if vec_eligible:
                 cached_vec = temp_vec_cache.get((rel_path, sha)) if not getattr(args, "force", False) else None
                 if cached_vec is not None:
-                    if isinstance(cached_vec, (bytes, bytearray)):
-                        vec_blob = bytes(cached_vec)
-                    elif isinstance(cached_vec, str):
-                        try:
-                            vec_blob = array.array("f", json.loads(cached_vec)).tobytes()
-                        except Exception:
-                            pass
+                    vec_blob = unit_vector_blob(cached_vec)
                 if not vec_blob and not no_embed:
                     embed_input = f"{title} — {heading_path}\nTags: {tags}\n{chunk_body}"
-                    vec = get_embedding(embed_input)
-                    if vec:
-                        vec_blob = array.array("f", vec).tobytes()
+                    vec_blob = unit_vector_blob(get_embedding(embed_input))
+                    if vec_blob:
                         embedded_count += 1
                 elif vec_blob:
                     embedded_count += 1
