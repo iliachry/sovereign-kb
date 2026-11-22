@@ -33,7 +33,7 @@ AUDIT_REGISTRY_PATH = (
     if os.environ.get("SWM_AUDIT_REGISTRY", "").strip()
     else _DEFAULT_AUDIT_REGISTRY_PATH
 )
-_GWI_SOURCE_FILES = ("gwi.py", "gwi_core.py", "gwi_science.py")
+_GWI_SOURCE_FILES = ("gwi.py", "gwi_core.py", "gwi_science.py", "gwi_lenses.py")
 _GWI_SRC_HASH_CACHE: dict[tuple[tuple[str, int, int], ...], str] = {}
 
 

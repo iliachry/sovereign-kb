@@ -8,6 +8,7 @@ $$\mathcal{G}(\mathbf{S}) = \left( \sum_{i=1}^4 \alpha_i \mathcal{S}_i \right) \
 - **Coupled *Chrysos* $\times$ *Verga* Scoring & `7.80` Unmeasured Cap**:
   $$\mathcal{G}_{\text{Verga}}(R) = \min_{\ell \in \mathcal{L}_{\text{req}}(R)} \mathcal{S}_{\ell}(R), \qquad \mathcal{G}_{\text{total}}(R) = \sqrt{\mathcal{G}_{\text{Chrysos}}(R) \cdot \mathcal{G}_{\text{Verga}}(R)}$$
   Under `--strict-lenses`, any required Craft Lens with unmeasured runtime/contact-sheet evidence is capped at **`7.80 / 10` (`VERGA_UNMEASURED_CAP`)**, preventing premature `9.0+` certification.
+  Under `--strict-lenses` the cap also applies to a lens with **zero** measured probes, a lens with fewer than 3 measured probes loses `0.15` per missing probe (`probe_coverage` in the JSON report), and an `app` repository that ships a rendered UI without runtime diagnostics has Release Evidence (R) capped at `7.80` (`GWI-APP-R05`). Python modules named `*dashboard*` that emit a full HTML document count as rendered UI, so they need the same 3-viewport sheet as hand-written HTML.
 - **Two-Sided Kolmogorov & Subtractive Cognitive Window (`v1.4.0`)**:
   $$\mathcal{E}(\mathcal{L}) = \exp\!\left( - \max\!\left(0, \frac{|\mathcal{L}| - K(\mathcal{T})}{K(\mathcal{T})}\right) \right), \qquad \mathcal{P}_{\text{subtractive}}(\mathbf{m}) = \prod_{k \in \mathcal{B}} \exp\!\left( -\lambda_k \cdot \max\!\left(0,\; \frac{m_k - U_k}{U_k}\right)^2 \right)$$
 
@@ -32,6 +33,11 @@ Auto-selected whenever a target contains `.kb/index.db` or sovereign taxonomy di
 - **Tier II ($\mathcal{S}_{\text{perc}}$ / *Venustas* — $w = 0.20$)**: `V_prose` ($0.10$: balanced CommonMark triple-backtick fences, even `$$` KaTeX delimiters, `0` `TODO`/`FIXME`/`TBD` stubs) and `A_struct` ($0.10$: heading hierarchy and non-stub body exposition $\ge 20$ prose words outside frontmatter and code fences).
 - **Tier III ($\mathcal{S}_{\text{act}}$ / *Utilitas* — $w = 0.30$)**: `U_links` ($0.15$: 100% `[[wikilink]]` resolution and average degree) and `D_topo` ($0.15$: 100% Largest Connected Component $\text{LCC} = 1.0$, 2-hop hub reachability from `INDEX.md`, and positive normalized Laplacian Fiedler algebraic connectivity $\lambda_2(L_{\text{sym}}) > 0$ catching isolated cycles).
 - **Tier IV ($\mathcal{S}_{\text{exist}}$ / *Syneidesis* — $w = 0.25$)**: `B_tier0` ($0.15$: Tier-0 taxonomy completeness, dated episodic logs, and `.kb/rsi-ledger.jsonl` SHA-256 hash chain) and `R_prov` ($0.10$: secret hygiene and `SKILL.md` manifest integrity).
+
+
+Lens evaluators live in `src/sovereign_kb/gwi_lenses.py` (`LENS_EVALUATORS`, one `_lens_<id>` function per lens); `gwi.evaluate_craft_lenses` handles activation, the strict caps, and pole coupling.
+
+The audit report's **Tri-Council State** shows `STALE (+N commits)` when the recorded Astra x Fable approval is older than the audited commit.
 
 ---
 
