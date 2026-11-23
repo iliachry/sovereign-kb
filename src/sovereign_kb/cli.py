@@ -3181,6 +3181,38 @@ echo "=== [{proj_name}] ALL QUALITY GATES PASSED ==="
         print(f"  - {extra}")
 
 
+def _git_stash_count(repo: Path) -> int:
+    out = subprocess.run(["git", "-C", str(repo), "stash", "list"], capture_output=True, text=True, check=False).stdout
+    return len([ln for ln in out.splitlines() if ln.strip()])
+
+
+def pull_rebase_autostash(repo: Path) -> str | None:
+    """Run `git pull --rebase --autostash` and report a failed autostash reapply.
+
+    When reapplying the autostash conflicts, git still exits 0: it leaves conflict markers in the
+    working tree and keeps the uncommitted changes in a new stash. Committing on top of that would
+    publish the markers and silently drop the stashed edits, so return an error message instead.
+    Returns None when the pull and reapply both succeeded.
+    """
+    stashes_before = _git_stash_count(repo)
+    res = subprocess.run(
+        ["git", "-C", str(repo), "pull", "--rebase", "--autostash"], capture_output=True, text=True, check=False
+    )
+    if res.returncode != 0:
+        return f"`git pull --rebase --autostash` failed (exit {res.returncode}): {(res.stderr or res.stdout).strip()[-400:]}"
+    unmerged = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True, check=False
+    ).stdout.split()
+    if unmerged or _git_stash_count(repo) > stashes_before:
+        files = ", ".join(unmerged) if unmerged else "(see stash)"
+        return (
+            f"pulled changes conflict with your uncommitted edits in {files}. Your edits are kept in "
+            f"stash@{{0}} and nothing was committed. Resolve the conflict markers in {repo}, then run "
+            f"`git -C {repo} stash drop` and retry."
+        )
+    return None
+
+
 def cmd_git_sync(args) -> None:
     vault_dir = resolve_vault_dir(getattr(args, "vault", None))
     mode = getattr(args, "mode", "sync")
@@ -3203,7 +3235,10 @@ def cmd_git_sync(args) -> None:
             or "origin"
         )
         print(f"[sovereign-kb {mode}] Pulling latest vault changes from {remote_url}...")
-        subprocess.run(["git", "-C", str(vault_dir), "pull", "--rebase", "--autostash"], check=True)
+        pull_error = pull_rebase_autostash(vault_dir)
+        if pull_error:
+            print(f"[sovereign-kb {mode}] Error: {pull_error}", file=sys.stderr)
+            sys.exit(1)
         cmd_sync(argparse.Namespace(vault=str(vault_dir), force=False, no_embed=_is_vault_no_embed(vault_dir)))
         if mode in ("sync", "push"):
             status = subprocess.run(
