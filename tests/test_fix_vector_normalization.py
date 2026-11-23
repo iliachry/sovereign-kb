@@ -4,6 +4,7 @@ me-kb's `.kb/index.db` is shared with `kb_cli.py`, whose schema-v3 contract (and
 `tests/test_kb_verify.py::test_schema_v3_optimizations_and_admission`) requires every
 stored vector to have norm 1. Raw Ollama `nomic-embed-text` vectors have norm ~18.
 """
+
 from __future__ import annotations
 
 import array
