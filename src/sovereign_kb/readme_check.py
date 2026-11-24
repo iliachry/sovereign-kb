@@ -9,6 +9,7 @@ Every check is evaluated against the exact commit being pushed (git objects, not
                     `[project.scripts]` in pyproject.toml) is a real subcommand (`<cli> <sub> --help` exits 0).
   3. Surface drift — CLI commands (Typer/Click/argparse) and HTTP routes (FastAPI) added since the remote
                     base must be mentioned in README.md; removed ones must no longer be advertised.
+                    A command whose name starts with `_` is an internal entry point, not documented surface.
   4. Test counts  — hard-coded counts such as "168 total tests" or "21/21 pytest" must equal
                     `pytest --collect-only`, whatever verbosity the project's own pytest options set;
                     a count from a collection that did not end cleanly is not compared.
@@ -198,6 +199,15 @@ def command_issues(repo: Path, cmds: set[tuple[str, str]]) -> list[str]:
 
 
 # --------------------------------------------------------------------------- 3. surface drift
+def _internal(name: str) -> bool:
+    """A leading underscore marks an entry point kept out of the documented surface, such as a worker re-entry.
+
+    The name is the one marker read. `help=argparse.SUPPRESS` on `add_parser` does not hide a subcommand
+    (argparse lists it as `==SUPPRESS==`), and one registered without `help` looks like any undocumented command.
+    """
+    return name.startswith("_")
+
+
 def surface(repo: Path, sha: str) -> tuple[set[str], set[str]]:
     cmds: set[str] = set()
     routes: set[str] = set()
@@ -219,8 +229,9 @@ def surface(repo: Path, sha: str) -> tuple[set[str], set[str]]:
         for args, fn in TYPER_RE.findall(src):
             a = args.strip()
             m = re.match(r"[\"']([\w-]+)[\"']", a) or re.search(r"\bname\s*=\s*[\"']([\w-]+)[\"']", a)
-            cmds.add(m.group(1) if m else fn.replace("_", "-"))
-        cmds.update(ARGPARSE_RE.findall(src))
+            if not _internal(m.group(1) if m else fn):
+                cmds.add(m.group(1) if m else fn.replace("_", "-"))
+        cmds.update(c for c in ARGPARSE_RE.findall(src) if not _internal(c))
         routes.update(r_ for r_ in ROUTE_RE.findall(src) if r_ != "/")
     return cmds, routes
 

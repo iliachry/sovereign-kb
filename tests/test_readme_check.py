@@ -1,8 +1,11 @@
-"""F-22: README drift gate (`readme_check.py`): test counts.
+"""F-22: README drift gate (`readme_check.py`): test counts and internal subcommands.
 
-Regression for the way the gate failed on 2026-11-24: the test-count check never ran in a project whose own
-pytest options include `-q`, so a README went on claiming a count that pytest no longer collected, and every
-push printed "collection was unavailable".
+Regressions for two ways the gate failed on 2026-11-24:
+
+- the test-count check never ran in a project whose own pytest options include `-q`, so a README went on
+  claiming a count that pytest no longer collected, and every push printed "collection was unavailable";
+- a subcommand named with a leading underscore could not be documented by any README text, so adding one
+  blocked every push until it was renamed.
 """
 
 from __future__ import annotations
@@ -378,3 +381,79 @@ def test_output_that_is_not_valid_text_does_not_crash_the_gate(tmp_path: Path, m
     _run_with(monkeypatch, [sys.executable, "-c", emits_latin_1])
 
     assert collected_tests(tmp_path).tests == 3
+
+
+# --------------------------------------------------------------------------- internal subcommands
+def _argparse_tool(*parsers: str) -> str:
+    lines = ["import argparse", "", "parser = argparse.ArgumentParser()", "sub = parser.add_subparsers()"]
+    return "\n".join([*lines, *(f"sub.add_parser({p})" for p in parsers)]) + "\n"
+
+
+@pytest.mark.parametrize("entry_point", [False, True], ids=["script-run-by-path", "installed-entry-point"])
+def test_underscore_named_subcommand_needs_no_readme_entry(tmp_path: Path, entry_point: bool) -> None:
+    """F-22: No README text could document `_run-step`, so the push that added it was refused every time."""
+    repo = _repo(tmp_path / "tool")
+    scripts = '[project.scripts]\ntool = "tool:main"\n' if entry_point else ""
+    _write(repo / "pyproject.toml", f'[project]\nname = "tool"\nversion = "0"\n\n{scripts}')
+    _write(repo / "tool.py", _argparse_tool('"export"'))
+    _write(repo / "README.md", "# tool\n\nRun `tool export` to write the archive.\n")
+    base = _commit(repo, "base")
+    _write(repo / "tool.py", _argparse_tool('"export"', '"_run-step", help=argparse.SUPPRESS', '"status"'))
+    head = _commit(repo, "add a worker entry and a public command")
+
+    issues, _ = check(repo, base, head, runtime=False)
+
+    assert issues == ["[surface] new CLI command `status` added in this push but not shown in README.md"]
+
+
+def test_underscore_named_typer_commands_are_internal(tmp_path: Path) -> None:
+    """F-22: The rule reads the declared name, whether it is given to the decorator or taken from the function."""
+    repo = _repo(tmp_path / "tool")
+    _write(repo / "README.md", "# tool\n")
+    _write(repo / "cli.py", "import typer\n\napp = typer.Typer()\n")
+    base = _commit(repo, "base")
+    _write(
+        repo / "cli.py",
+        "import typer\n\napp = typer.Typer()\n\n\n"
+        '@app.command("_reindex")\ndef reindex():\n    pass\n\n\n'
+        '@app.command(name="_drain")\ndef drain():\n    pass\n\n\n'
+        "@app.command()\ndef _warm_cache():\n    pass\n\n\n"
+        "@app.command()\ndef publish():\n    pass\n",
+    )
+    head = _commit(repo, "add commands")
+
+    issues, _ = check(repo, base, head, runtime=False)
+
+    assert issues == ["[surface] new CLI command `publish` added in this push but not shown in README.md"]
+
+
+def test_renaming_a_command_to_an_internal_name_still_retires_the_old_one(tmp_path: Path) -> None:
+    """F-22: Putting a command behind an underscore does not let the README go on advertising its old name."""
+    repo = _repo(tmp_path / "tool")
+    _write(repo / "README.md", "# tool\n\nRun `tool.py export` to write the archive.\n")
+    _write(repo / "tool.py", _argparse_tool('"export"'))
+    base = _commit(repo, "base")
+    _write(repo / "tool.py", _argparse_tool('"_export"'))
+    head = _commit(repo, "make export internal")
+
+    issues, _ = check(repo, base, head, runtime=False)
+
+    assert issues == ["[surface] CLI command `export` was removed but README.md still advertises it"]
+
+
+def test_suppressed_help_alone_does_not_make_a_subcommand_internal(tmp_path: Path) -> None:
+    """F-22: `help=argparse.SUPPRESS` hides nothing in argparse's listing, so it is not read as a marker."""
+    repo = _repo(tmp_path / "tool")
+    _write(repo / "README.md", "# tool\n")
+    _write(repo / "tool.py", _argparse_tool())
+    base = _commit(repo, "base")
+    _write(repo / "tool.py", _argparse_tool('"migrate", help=argparse.SUPPRESS'))
+    head = _commit(repo, "add migrate")
+
+    issues, _ = check(repo, base, head, runtime=False)
+
+    assert issues == ["[surface] new CLI command `migrate` added in this push but not shown in README.md"]
+
+    _write(repo / "README.md", "# tool\n\n`tool.py migrate` moves the store to the new layout.\n")
+
+    assert check(repo, base, _commit(repo, "document migrate"), runtime=False)[0] == []
