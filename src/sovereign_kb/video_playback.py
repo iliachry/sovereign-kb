@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 DEFAULT_PROMPT = """You are conducting an autonomous human-like playback audit of this video deliverable.
 Act as a strict, expert human director and reviewer who is watching the video playback from beginning to end.
@@ -77,9 +77,9 @@ def _ensure_bedrock_env() -> None:
 def audit_video_playback_native(
     video_path: Path,
     model_id: str = "amazon.nova-pro-v1:0",
-    prompt: Optional[str] = None,
-    region_name: Optional[str] = None,
-) -> Dict[str, Any]:
+    prompt: str | None = None,
+    region_name: str | None = None,
+) -> dict[str, Any]:
     """
     Sends the entire raw video bytes directly to Amazon Bedrock Converse API
     for end-to-end human playback inspection.
@@ -156,7 +156,7 @@ def extract_timeline_snapshots(
     video_path: Path,
     output_dir: Path,
     num_frames: int = 12,
-) -> List[Path]:
+) -> list[Path]:
     """
     Extracts evenly-spaced snapshot frames across the video duration using ffmpeg.
     """
@@ -184,7 +184,7 @@ def extract_timeline_snapshots(
     except Exception as e:
         raise RuntimeError(f"Could not determine video duration: {e}") from e
 
-    frames: List[Path] = []
+    frames: list[Path] = []
     step = duration / (num_frames + 1)
     for i in range(1, num_frames + 1):
         t_sec = round(i * step, 2)
@@ -216,8 +216,8 @@ def audit_video_triad_keyframes(
     video_path: Path,
     snapshots_dir: Path,
     num_frames: int = 12,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
+    prompt: str | None = None,
+) -> dict[str, Any]:
     """
     Extracts keyframes and executes parallel audit via `oc triad` (Fable 5.1 x Astra).
     """
@@ -284,7 +284,7 @@ def cmd_video_audit(args: argparse.Namespace) -> None:
     )
 
     mode = getattr(args, "mode", "native")
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
 
     if mode in ("native", "all"):
         print(f"📡 Sending raw video binary to Amazon Bedrock ({args.model})...")

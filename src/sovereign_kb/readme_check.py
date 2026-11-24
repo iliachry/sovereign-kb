@@ -362,9 +362,10 @@ def _pre_push_ranges(repo: Path, stdin: str) -> list[tuple[str | None, str]]:
         if len(parts) != 4 or parts[1] == ZERO_SHA:
             continue  # malformed or branch deletion
         lsha, rsha = parts[1], parts[3]
+        base_sha: str | None = rsha
         if rsha == ZERO_SHA or not _has_commit(repo, rsha):
-            rsha = _base_from_remotes(repo, lsha)
-        ranges.append((rsha, lsha))
+            base_sha = _base_from_remotes(repo, lsha)
+        ranges.append((base_sha, lsha))
     return ranges
 
 

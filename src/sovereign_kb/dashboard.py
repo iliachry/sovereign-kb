@@ -23,9 +23,10 @@ import subprocess
 import time
 import urllib.parse
 import webbrowser
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 def discover_vaults(active_vault: Path, config_path: Path) -> list[dict[str, Any]]:
@@ -88,10 +89,10 @@ def build_dashboard_snapshot(
     sync_fn: Callable[[Any], None],
     list_md_fn: Callable[[Path], list[Path]],
     parse_fm_fn: Callable[[str], dict],
-    extract_links_fn: Callable[[str, dict[str, str] | None], list[str]],
+    extract_links_fn: Any,
     build_stem_fn: Callable[[Path, list[Path] | None], dict[str, str]],
     hybrid_retrieve_fn: Callable[..., list[dict]],
-    hips_retrieve_fn: Callable[..., tuple[dict, dict]],
+    hips_retrieve_fn: Any,
     resolve_hips_bin_fn: Callable[[], Path | None],
     collect_usage_fn: Callable[..., dict[str, Any]],
     config_path: Path,

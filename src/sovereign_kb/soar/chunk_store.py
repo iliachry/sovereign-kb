@@ -5,8 +5,9 @@ from __future__ import annotations
 import datetime
 import hashlib
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 class ChunkStore:

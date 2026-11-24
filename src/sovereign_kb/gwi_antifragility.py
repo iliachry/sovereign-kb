@@ -347,7 +347,7 @@ def apply_antifragility_probes(ctx: SimpleNamespace) -> None:
 
     # af.failure_to_gate
     tgt = f">= {int(FIX_TEST_RATIO_TARGET * 100)}% of fix commits leave a regression test"
-    ftg = measure_failure_to_gate(root) if has_git else {"available": False}
+    ftg: dict[str, Any] = measure_failure_to_gate(root) if has_git else {"available": False}
     if not ftg.get("available"):
         _record("af.failure_to_gate", "INFO", "No git history; failure-to-gate rate not applicable", None, tgt)
     elif ftg["fix_commits"] < FIX_MIN_SAMPLE:

@@ -266,20 +266,24 @@ def merge_audit_registries(local_reg: dict[str, Any], remote_reg: dict[str, Any]
                 if _should_replace_record(l_sp, r_sp, status_key="status"):
                     merged_sp = copy.deepcopy(r_sp)
                     # Preserve whichever subproject triad record is newer
-                    r_sp_tr = r_sp.get("triad") if isinstance(r_sp.get("triad"), dict) else {}
-                    l_sp_tr = l_sp.get("triad") if isinstance(l_sp.get("triad"), dict) else {}
+                    r_tr_raw = r_sp.get("triad")
+                    r_sp_tr: dict[str, Any] = r_tr_raw if isinstance(r_tr_raw, dict) else {}
+                    l_tr_raw = l_sp.get("triad")
+                    l_sp_tr: dict[str, Any] = l_tr_raw if isinstance(l_tr_raw, dict) else {}
                     if l_sp_tr.get("ever_audited") and _should_replace_record(
                         r_sp_tr, l_sp_tr, status_key="disposition"
                     ):
                         merged_sp["triad"] = copy.deepcopy(l_sp_tr)
                     l_subs[sp_key] = merged_sp
                 else:
-                    r_sp_tr = r_sp.get("triad") if isinstance(r_sp.get("triad"), dict) else {}
-                    l_sp_tr = l_sp.get("triad") if isinstance(l_sp.get("triad"), dict) else {}
-                    if r_sp_tr.get("ever_audited") and _should_replace_record(
-                        l_sp_tr, r_sp_tr, status_key="disposition"
+                    r_tr_raw = r_sp.get("triad")
+                    r_sp_tr2: dict[str, Any] = r_tr_raw if isinstance(r_tr_raw, dict) else {}
+                    l_tr_raw = l_sp.get("triad")
+                    l_sp_tr2: dict[str, Any] = l_tr_raw if isinstance(l_tr_raw, dict) else {}
+                    if r_sp_tr2.get("ever_audited") and _should_replace_record(
+                        l_sp_tr2, r_sp_tr2, status_key="disposition"
                     ):
-                        l_sp["triad"] = copy.deepcopy(r_sp_tr)
+                        l_sp["triad"] = copy.deepcopy(r_sp_tr2)
 
     merged["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return merged
@@ -418,7 +422,8 @@ def collect_organon_status(all_nodes: bool = False) -> dict[str, Any]:
 
     # 3. Phronesis (`gwi`) — distinguishes recorded_pass_targets vs live fresh_pass_targets
     reg = load_audit_registry()
-    projects_map = reg.get("projects") if isinstance(reg.get("projects"), dict) else {}
+    raw_pm = reg.get("projects")
+    projects_map: dict[str, Any] = raw_pm if isinstance(raw_pm, dict) else {}
     total_targets = 0
     recorded_pass = 0
     fresh_pass = 0

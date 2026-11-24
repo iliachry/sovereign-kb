@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Union
 
 
 @dataclass(frozen=True)
@@ -16,7 +15,7 @@ class Var:
         return f"<{self.name}>"
 
 
-Symbol = Union[Var, str, int, float]
+Symbol = Var | str | int | float
 
 
 @dataclass(frozen=True)
@@ -38,7 +37,7 @@ class RelationalTest:
 class DisjunctionTest:
     """Matches when the WME value is in `options` (`<< a b c >>`)."""
 
-    options: tuple[Union[str, int, float], ...]
+    options: tuple[str | int | float, ...]
 
 
 @dataclass(frozen=True)
@@ -48,7 +47,7 @@ class ConjunctiveTest:
     tests: tuple[Test, ...]
 
 
-Test = Union[EqualityTest, RelationalTest, DisjunctionTest, ConjunctiveTest]
+Test = EqualityTest | RelationalTest | DisjunctionTest | ConjunctiveTest
 
 
 @dataclass
@@ -76,10 +75,10 @@ class RHSFuncCall:
     """An RHS function invocation such as `(+ <x> 1)`, `(min <a> <b>)`, `(write ...)`, or `(halt)`."""
 
     func_name: str
-    args: list[Union[Symbol, RHSFuncCall]] = field(default_factory=list)
+    args: list[Symbol | RHSFuncCall] = field(default_factory=list)
 
 
-RHSValue = Union[Symbol, RHSFuncCall]
+RHSValue = Symbol | RHSFuncCall
 
 
 @dataclass
@@ -114,7 +113,7 @@ class Production:
 
     name: str
     conditions: list[Condition]
-    actions: list[Union[RHSAction, RHSFunctionStandalone]]
+    actions: list[RHSAction | RHSFunctionStandalone]
     doc: str = ""
     support_flag: str | None = None  # ':i-support', ':o-support', or None (auto-inferred)
     is_chunk: bool = False

@@ -16,7 +16,7 @@ $$\mathcal{G}(\mathbf{S}) = \left( \sum_{i=1}^4 \alpha_i \mathcal{S}_i \right) \
 
 ## 1. The 5 Domain Evaluation Profiles (`app`, `sim`, `video`, `paper`, `kb`) & 8 Bi-Polar Specialist Craft Lenses (4 *Verga* + 4 *Chrysos*)
 
-| Lens ID | Pole & Profiles | Primary Deterministic Artifact Probes (`src/sovereign_kb/gwi.py`) | Hard Veto Threshold | Required Contact Sheet / Evidence |
+| Lens ID | Pole & Profiles | Primary Deterministic Artifact Probes (`src/sovereign_kb/gwi/`) | Hard Veto Threshold | Required Contact Sheet / Evidence |
 | :--- | :--- | :--- | :--- | :--- |
 | **`technical-artist`** | *Verga* (`app` 3D, `sim`) | `renderer.info` (`draws <= 180`), frame `p95 <= 16.6ms`, KTX2/Draco compression, camera $\notin$ mesh AABB, Rec.709 luminance ($\mu_Y \in [18, 215], \sigma_Y \ge 14$), Sobel edge & 6-tile MSE | `draws > 300`, `p95 > 33.3ms`, black/blown canvas, or unseeded `Math.random()` | 6-Pose Canonical Orbit Sheet (`1920x1080`) |
 | **`ux-ergonomics`** | *Verga* (`app`, `sim` HUD) | 2D HUD $\cap$ 3D canvas occlusion ($\le 18\%$), linearized WCAG 2.1 contrast ($\ge 4.5:1$), `0px` horizontal overflow across `390/768/1440px`, and **Subtractive Laws (`L0`–`L8`)** | HUD occlusion $> 25\%$, contrast $< 4.5:1$, `headerRows > 1`, `expandedTablesVisible > 1`, `controls > 36` ($S_{L8}$), or `edge_density > 0.36` | 3-Viewport Responsive Sheet (`390` / `768` / `1440px`) |
@@ -47,7 +47,7 @@ Antifragile means a repository gets *stronger* from stress; fail-closed gates, r
 
 To backfill a regression test for an old fix, commit the test with one trailer per fix, e.g. `Regression-test-for: 0bc7ae3`. The `GWI-SCI-06`/`GWI-SCI-07` rigor and formal-proof checks live in core `src/sovereign_kb/gwi_rigor.py`; `frontier_organon` re-exports them.
 
-Lens evaluators live in `src/sovereign_kb/gwi_lenses.py` (`LENS_EVALUATORS`, one `_lens_<id>` function per lens); `gwi.evaluate_craft_lenses` handles activation, the strict caps, and pole coupling.
+Lens evaluators live in the `src/sovereign_kb/gwi/` package, one `_lens_<id>` function per lens (`lenses_verga_craft.py`, `lenses_verga_ux.py`, `lenses_chrysos.py`); `lenses_eval.py` holds the `LENS_EVALUATORS` registry and `evaluate_craft_lenses`, which handles activation, the strict caps, and pole coupling. `src/sovereign_kb/gwi_lenses.py` re-exports the registry and the evaluators under their earlier import path.
 
 The audit report's **Tri-Council State** shows `STALE (+N commits)` when the recorded Astra x Fable approval is older than the audited commit.
 

@@ -1,0 +1,14 @@
+stages:
+  - verify
+
+sovereign-kb-gate:
+  stage: verify
+  image: python:3.11-slim
+  script:
+    - pip install --no-cache-dir uv
+    - uv sync --extra dev --frozen
+    - uv run --extra dev ruff check .
+    - uv run --extra dev ruff format --check .
+    - uv run --extra dev mypy src/sovereign_kb
+    - PYTHONHASHSEED=42 uv run --extra dev pytest -q
+    - uv run python -m sovereign_kb.gwi audit . --strict

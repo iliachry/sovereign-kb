@@ -16,7 +16,7 @@ uv lock --check
 # Stage 1: Git conflict-marker hygiene. grep exit codes: 0 = markers found (fail), 1 = clean, >1 = grep error (fail).
 set +e
 grep -rnIE '^(<<<<<<<|=======|>>>>>>>)' . --exclude-dir=.venv --exclude-dir=.git --exclude-dir=__pycache__ \
-  --exclude=quality_gate.sh --exclude=cli.py
+  --exclude=quality_gate.sh --exclude=scaffold.py
 grep_rc=$?
 set -e
 if [ "$grep_rc" -eq 0 ]; then
@@ -40,9 +40,10 @@ for p in list(CANONICAL_BENCHMARK_PROBES) + list(CANONICAL_HELDOUT_PROBES):
     assert (starter / tp).is_file(), f'Probe target does not exist in starter_vault: {tp}'
 print('[Stage 1.5] Public boundary & probe hygiene: PASS')
 "
-# Stage 2: Ruff lint & format check
+# Stage 2: Ruff lint, format & mypy type check
 uv run --extra dev ruff check .
 uv run --extra dev ruff format --check .
+uv run --extra dev mypy src/sovereign_kb
 # Stage 3: Deterministic unit & property tests (pinned seed)
 PYTHONHASHSEED=42 uv run --extra dev pytest -q
 # Stage 4: Smoke & CLI/packaging contract verification

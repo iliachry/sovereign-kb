@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Union
+from typing import Any
 
 from .ast_nodes import (
     AttrValueTest,
@@ -52,7 +52,7 @@ class WME:
     timetag: int
     id: str
     attr: str
-    value: Union[str, int, float]
+    value: str | int | float
     support: str = "arch"  # 'arch', 'i', 'o'
     source_production: str | None = None
     instantiation_id: int | None = None
@@ -81,9 +81,9 @@ class Preference:
     pref_id: int
     id: str
     attr: str
-    value: Union[str, int, float]
+    value: str | int | float
     pref_type: str  # '+', '-', '!', '~', '>', '<', '='
-    referent: Union[str, int, float, None] = None
+    referent: str | int | float | None = None
     support: str = "i"  # 'i' or 'o'
     source_production: str | None = None
     instantiation_id: int | None = None
@@ -110,11 +110,11 @@ class Instantiation:
 
     inst_id: int
     production_name: str
-    bindings: dict[str, Union[str, int, float]]
+    bindings: dict[str, str | int | float]
     matched_timetags: tuple[int, ...]
     support: str  # 'i' or 'o'
     state_id: str
-    lhs_bindings: dict[str, Union[str, int, float]] = field(default_factory=dict)
+    lhs_bindings: dict[str, str | int | float] = field(default_factory=dict)
     created_wme_timetags: list[int] = field(default_factory=list)
     created_pref_ids: list[int] = field(default_factory=list)
 
@@ -173,7 +173,7 @@ class SoarKernel:
         self.learned_chunks: list[str] = []
         self.trace_log: list[dict[str, Any]] = []
         self.write_buffer: list[str] = []
-        self.pending_inputs: list[tuple[str, str, Union[str, int, float]]] = []
+        self.pending_inputs: list[tuple[str, str, str | int | float]] = []
 
         self._initialize_working_memory()
 
@@ -234,7 +234,7 @@ class SoarKernel:
         self._log("LOAD", f"Loaded {len(parsed)} productions into Procedural Memory.")
         return parsed
 
-    def add_input_wme(self, parent_id: str, attr: str, value: Union[str, int, float]) -> None:
+    def add_input_wme(self, parent_id: str, attr: str, value: str | int | float) -> None:
         """Queue an external sensory input WME to be added during the next `INPUT` phase."""
         self.pending_inputs.append((parent_id, attr, value))
 
@@ -248,7 +248,7 @@ class SoarKernel:
         }
         self.trace_log.append(entry)
 
-    def _find_wme(self, id_str: str, attr: str, value: Union[str, int, float]) -> WME | None:
+    def _find_wme(self, id_str: str, attr: str, value: str | int | float) -> WME | None:
         for w in self.wmes.values():
             if w.id == id_str and w.attr == attr and w.value == value and type(w.value) is type(value):
                 return w
@@ -258,7 +258,7 @@ class SoarKernel:
         self,
         id_str: str,
         attr: str,
-        value: Union[str, int, float],
+        value: str | int | float,
         support: str = "i",
         source_production: str | None = None,
         instantiation_id: int | None = None,
@@ -291,7 +291,7 @@ class SoarKernel:
         self.wmes[tt] = wme
         return wme
 
-    def _remove_wme_by_tuple(self, id_str: str, attr: str, value: Union[str, int, float]) -> list[WME]:
+    def _remove_wme_by_tuple(self, id_str: str, attr: str, value: str | int | float) -> list[WME]:
         removed: list[WME] = []
         for tt, w in list(self.wmes.items()):
             if w.id == id_str and w.attr == attr and w.value == value:
@@ -303,9 +303,9 @@ class SoarKernel:
         self,
         id_str: str,
         attr: str,
-        value: Union[str, int, float],
+        value: str | int | float,
         pref_type: str,
-        referent: Union[str, int, float, None] = None,
+        referent: str | int | float | None = None,
         support: str = "i",
         source_production: str | None = None,
         instantiation_id: int | None = None,
@@ -385,16 +385,16 @@ class SoarKernel:
     # -------------------------------------------------------------------------
     # Pattern Matcher (Rete-style Unification + Relational & Negated Tests)
     # -------------------------------------------------------------------------
-    def match_production(self, prod: Production) -> list[tuple[dict[str, Union[str, int, float]], tuple[int, ...]]]:
+    def match_production(self, prod: Production) -> list[tuple[dict[str, str | int | float], tuple[int, ...]]]:
         """Find all valid variable bindings and supporting WME timetags for `prod`."""
         positive_conds = [c for c in prod.conditions if not c.negated]
         negated_conds = [c for c in prod.conditions if c.negated]
 
-        results: list[tuple[dict[str, Union[str, int, float]], tuple[int, ...]]] = []
+        results: list[tuple[dict[str, str | int | float], tuple[int, ...]]] = []
 
         def backtrack(
             idx: int,
-            bindings: dict[str, Union[str, int, float]],
+            bindings: dict[str, str | int | float],
             timetags: list[int],
         ) -> None:
             if idx == len(positive_conds):
@@ -412,7 +412,7 @@ class SoarKernel:
         backtrack(0, {}, [])
         return results
 
-    def _condition_matches_any(self, cond: Condition, bindings: dict[str, Union[str, int, float]]) -> bool:
+    def _condition_matches_any(self, cond: Condition, bindings: dict[str, str | int | float]) -> bool:
         for _ in self._match_positive_condition(cond, bindings):
             return True
         return False
@@ -420,8 +420,8 @@ class SoarKernel:
     def _match_positive_condition(
         self,
         cond: Condition,
-        bindings: dict[str, Union[str, int, float]],
-    ) -> list[tuple[dict[str, Union[str, int, float]], list[int]]]:
+        bindings: dict[str, str | int | float],
+    ) -> list[tuple[dict[str, str | int | float], list[int]]]:
         """Match a single positive `Condition` (which may contain multiple `^attr` tests)."""
         # Determine candidate IDs for `cond.id_var`
         if cond.id_var.name in bindings:
@@ -434,7 +434,7 @@ class SoarKernel:
             else:
                 cand_ids = sorted({w.id for w in self.wmes.values()})
 
-        matches: list[tuple[dict[str, Union[str, int, float]], list[int]]] = []
+        matches: list[tuple[dict[str, str | int | float], list[int]]] = []
         pos_attr_tests = [at for at in cond.attr_tests if not at.negated]
         neg_attr_tests = [at for at in cond.attr_tests if at.negated]
 
@@ -444,20 +444,21 @@ class SoarKernel:
 
             def match_attrs(
                 a_idx: int,
-                cur_b: dict[str, Union[str, int, float]],
+                cur_b: dict[str, str | int | float],
                 cur_tts: list[int],
+                _cid: str = cid,
             ) -> None:
                 if a_idx == len(pos_attr_tests):
                     # Check negated attribute tests `-^attr val`
                     for nat in neg_attr_tests:
-                        if self._attr_test_matches(cid, nat, cur_b):
+                        if self._attr_test_matches(_cid, nat, cur_b):
                             return
                     matches.append((cur_b, cur_tts))
                     return
 
                 at = pos_attr_tests[a_idx]
                 if at.attr == "__self__":
-                    ok, next_b = self._eval_test(cid, at.value_test, cur_b)
+                    ok, next_b = self._eval_test(_cid, at.value_test, cur_b)
                     if ok:
                         match_attrs(a_idx + 1, next_b, cur_tts)
                     return
@@ -466,7 +467,7 @@ class SoarKernel:
                 if attr_name is None:
                     # Unbound attribute variable
                     for w in self.wmes.values():
-                        if w.id != cid:
+                        if w.id != _cid:
                             continue
                         b_with_attr = dict(cur_b)
                         assert isinstance(at.attr, Var)
@@ -478,7 +479,7 @@ class SoarKernel:
                     # Attribute name is known; search WMEs or acceptable operator preferences
                     if at.acceptable_pref:
                         for p in self.preferences.values():
-                            if p.id == cid and p.attr == str(attr_name) and p.pref_type == "+":
+                            if p.id == _cid and p.attr == str(attr_name) and p.pref_type == "+":
                                 ok, next_b = self._eval_test(p.value, at.value_test, cur_b)
                                 if ok:
                                     # Record negative pref_id so TMS retracts dependents if the preference retracts
@@ -489,7 +490,7 @@ class SoarKernel:
                                     )
                     else:
                         for w in self.wmes.values():
-                            if w.id == cid and w.attr == str(attr_name):
+                            if w.id == _cid and w.attr == str(attr_name):
                                 ok, next_b = self._eval_test(w.value, at.value_test, cur_b)
                                 if ok:
                                     match_attrs(a_idx + 1, next_b, cur_tts + [w.timetag])
@@ -502,7 +503,7 @@ class SoarKernel:
         self,
         cid: str,
         at: AttrValueTest,
-        bindings: dict[str, Union[str, int, float]],
+        bindings: dict[str, str | int | float],
     ) -> bool:
         attr_name = self._resolve_symbol(at.attr, bindings)
         for w in self.wmes.values():
@@ -518,17 +519,17 @@ class SoarKernel:
     def _is_state_id(self, id_str: str) -> bool:
         return any(w.id == id_str and w.attr == "type" and w.value == "state" for w in self.wmes.values())
 
-    def _resolve_symbol(self, sym: Symbol, bindings: dict[str, Union[str, int, float]]) -> Union[str, int, float, None]:
+    def _resolve_symbol(self, sym: Symbol, bindings: dict[str, str | int | float]) -> str | int | float | None:
         if isinstance(sym, Var):
             return bindings.get(sym.name)
         return sym
 
     def _eval_test(
         self,
-        val: Union[str, int, float],
+        val: str | int | float,
         test: Test,
-        bindings: dict[str, Union[str, int, float]],
-    ) -> tuple[bool, dict[str, Union[str, int, float]]]:
+        bindings: dict[str, str | int | float],
+    ) -> tuple[bool, dict[str, str | int | float]]:
         if isinstance(test, EqualityTest):
             if isinstance(test.target, Var):
                 vname = test.target.name
@@ -581,11 +582,11 @@ class SoarKernel:
     # -------------------------------------------------------------------------
     def _eval_rhs_value(
         self,
-        rhs_val: Union[Symbol, RHSFuncCall],
-        bindings: dict[str, Union[str, int, float]],
+        rhs_val: Symbol | RHSFuncCall,
+        bindings: dict[str, str | int | float],
         rhs_new_vars: dict[str, str],
         hint_prefix: str = "O",
-    ) -> Union[str, int, float]:
+    ) -> str | int | float:
         if isinstance(rhs_val, Var):
             if rhs_val.name in bindings:
                 return bindings[rhs_val.name]
@@ -601,9 +602,9 @@ class SoarKernel:
     def _exec_rhs_func(
         self,
         call: RHSFuncCall,
-        bindings: dict[str, Union[str, int, float]],
+        bindings: dict[str, str | int | float],
         rhs_new_vars: dict[str, str],
-    ) -> Union[str, int, float]:
+    ) -> str | int | float:
         fn = call.func_name
         if fn == "crlf":
             return "\n"
@@ -638,14 +639,14 @@ class SoarKernel:
         else:
             return str(eval_args[0]) if eval_args else ""
 
-        if res.is_integer():
+        if float(res).is_integer():
             return int(res)
         return round(res, 6)
 
     def _fire_instantiation(
         self,
         prod: Production,
-        bindings: dict[str, Union[str, int, float]],
+        bindings: dict[str, str | int | float],
         matched_timetags: tuple[int, ...],
         support: str,
     ) -> Instantiation:
@@ -900,9 +901,14 @@ class SoarKernel:
 
         # Seed queue with supporting timetags of acceptable (+) preferences for referenced operators
         for op_id in referenced_ids - {superstate_id}:
-            for p in self.preferences.values():
-                if p.id == superstate_id and p.attr == "operator" and str(p.value) == op_id and p.pref_type == "+":
-                    for k_tt in p.supporting_timetags:
+            for pref_item in self.preferences.values():
+                if (
+                    pref_item.id == superstate_id
+                    and pref_item.attr == "operator"
+                    and str(pref_item.value) == op_id
+                    and pref_item.pref_type == "+"
+                ):
+                    for k_tt in pref_item.supporting_timetags:
                         if k_tt not in queue_tt:
                             queue_tt.append(k_tt)
 
@@ -1025,7 +1031,7 @@ class SoarKernel:
         extra_negated_conds: list[Condition] = []
         extra_obj_neg_attrs: dict[str, list[AttrValueTest]] = {}
 
-        def _variabilize_test_for(t: Test, lhs_b: dict[str, Union[str, int, float]]) -> Test:
+        def _variabilize_test_for(t: Test, lhs_b: dict[str, str | int | float]) -> Test:
             if isinstance(t, EqualityTest):
                 if isinstance(t.target, Var) and t.target.name in lhs_b:
                     rv = lhs_b[t.target.name]
@@ -1104,7 +1110,7 @@ class SoarKernel:
                 chunk_conditions.append(Condition(id_var=var_for_id(obj_id), attr_tests=neg_ats, is_state=False))
 
         # Build RHS actions for the chunk
-        chunk_actions: list[Union[RHSAction, RHSFunctionStandalone]] = []
+        chunk_actions: list[RHSAction | RHSFunctionStandalone] = []
         for _act, id_val, attr_val, val, prefs in superstate_results:
             rhs_id = var_for_id(id_val) if _is_identifier(id_val) else id_val
             rhs_v: Symbol = var_for_id(val) if (isinstance(val, str) and _is_identifier(val)) else val
@@ -1533,7 +1539,7 @@ class SoarKernel:
         fired_prods_this_cycle: set[str] = set()
 
         for _wave in range(50):
-            pending_firings: list[tuple[Production, dict[str, Union[str, int, float]], tuple[int, ...], str]] = []
+            pending_firings: list[tuple[Production, dict[str, str | int | float], tuple[int, ...], str]] = []
             for prod in list(self.productions.values()):
                 sup = self.classify_support(prod)
                 if sup == "o":

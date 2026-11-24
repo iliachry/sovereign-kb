@@ -26,8 +26,9 @@ import math
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from sovereign_kb.retrieval import invoke_hybrid_retrieve
 
@@ -329,7 +330,6 @@ _PROBE_STOPWORDS = frozenset(
         "such",
         "using",
         "used",
-        "when",
         "true",
         "false",
         "none",

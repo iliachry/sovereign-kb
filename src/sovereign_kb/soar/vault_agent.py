@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .ast_nodes import (
     ConjunctiveTest,
@@ -1066,10 +1067,7 @@ def register_soar_subparser(sub: argparse._SubParsersAction, show_all_aliases: b
         if show_all_aliases
         else None
     )
-    p_soar = sub.add_parser(
-        "soar",
-        **({"help": soar_help} if soar_help else {}),
-    )
+    p_soar = sub.add_parser("soar", help=soar_help) if soar_help else sub.add_parser("soar")
     p_soar.add_argument(
         "soar_cmd",
         nargs="?",

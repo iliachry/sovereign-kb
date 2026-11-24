@@ -2864,7 +2864,7 @@ def test_pistis_blockchain_tokenomics_and_aristocracy(tmp_path: Path, capsys) ->
         eng_ex.accept(sx2.session_id, "did:ethr:0xP2", 1, tb_ex.terms_hash(), now_ts=21)
 
     # 2. RFC 6962 Merkle Tree & P3 Privilege-Gap Circuit Breaker
-    leaves = [merkle_leaf_hash(f"event-{i}".encode("utf-8")) for i in range(7)]
+    leaves = [merkle_leaf_hash(f"event-{i}".encode()) for i in range(7)]
     root = compute_merkle_root(leaves)
     for idx in range(len(leaves)):
         prf = generate_merkle_proof(leaves, idx)
@@ -2872,7 +2872,7 @@ def test_pistis_blockchain_tokenomics_and_aristocracy(tmp_path: Path, capsys) ->
         assert verify_merkle_proof(leaves[(idx + 1) % len(leaves)], prf, root) is False
     # Malformed empty digests and interior-node proof shortening forgery MUST fail closed
     assert verify_merkle_proof("", [], "") is False
-    leaves4 = [merkle_leaf_hash(f"n-{i}".encode("utf-8")) for i in range(4)]
+    leaves4 = [merkle_leaf_hash(f"n-{i}".encode()) for i in range(4)]
     root4 = compute_merkle_root(leaves4)
     inner_01 = merkle_node_hash(leaves4[0], leaves4[1])
     inner_23 = merkle_node_hash(leaves4[2], leaves4[3])
@@ -3128,12 +3128,12 @@ def test_evr_everything_file_format_f18(tmp_path: Path, capsys: pytest.CaptureFi
         assert t_f16["dtype"] == "f16"
         assert t_f16["shape"] == [2, 2]
         assert t_f16["numel"] == 4
-        for got, exp in zip(t_f16["values"], f16_vals):
+        for got, exp in zip(t_f16["values"], f16_vals, strict=False):
             assert math.isclose(got, exp, rel_tol=1e-3, abs_tol=1e-3)
 
         t_bf16 = hr.read_tensor("tensors/bf16.tensor")
         assert t_bf16["dtype"] == "bf16"
-        for got, exp in zip(t_bf16["values"], bf16_vals):
+        for got, exp in zip(t_bf16["values"], bf16_vals, strict=False):
             assert math.isclose(got, exp, rel_tol=1e-2, abs_tol=1e-2)
 
         # A-8: FTS5 virtual table query & SQLite read-only authorizer blocking ATTACH / writes
@@ -3201,7 +3201,7 @@ def test_evr_everything_file_format_f18(tmp_path: Path, capsys: pytest.CaptureFi
         q4_out = qr.read_tensor("tensors/q4.tensor")
         assert q4_out["dtype"] == "q4_0"
         assert q4_out["strides"] == [4, 1]
-        for got, exp in zip(q4_out["values"], q4_in):
+        for got, exp in zip(q4_out["values"], q4_in, strict=False):
             assert math.isclose(got, exp, abs_tol=0.05)
 
     # Wedge 1: GWI Audit Seal + Pistis Chain Anchoring
@@ -3371,7 +3371,7 @@ def test_hybrid_retrieve_corpus_and_embedding_cache_equivalence_and_invalidation
         def read(self) -> bytes:
             return self._data
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> _FakeResp:
             return self
 
         def __exit__(self, *args: object) -> bool:
