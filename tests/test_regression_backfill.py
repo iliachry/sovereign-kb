@@ -198,7 +198,9 @@ def test_readme_surface_accepts_nested_group_command(tmp_path: Path) -> None:
     (repo / "src" / "svc").mkdir(parents=True)
 
     def git(*args: str) -> str:
-        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
 
     git("init", "-q")
     git("config", "user.email", "t@t")
