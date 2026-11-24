@@ -10,7 +10,8 @@ Every check is evaluated against the exact commit being pushed (git objects, not
   3. Surface drift — CLI commands (Typer/Click/argparse) and HTTP routes (FastAPI) added since the remote
                     base must be mentioned in README.md; removed ones must no longer be advertised.
   4. Test counts  — hard-coded counts such as "168 total tests" or "21/21 pytest" must equal
-                    `pytest --collect-only`.
+                    `pytest --collect-only`, whatever verbosity the project's own pytest options set;
+                    a count from a collection that did not end cleanly is not compared.
 
 Limitation (by design): it cannot judge whether prose is semantically stale. It only catches structural drift
 (dead paths, phantom commands, undocumented new surface, wrong numbers).
@@ -28,6 +29,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import unquote
 
 try:
@@ -281,19 +283,85 @@ def count_claims(readme: str) -> set[int]:
     return claims
 
 
-def collected_tests(repo: Path) -> int | None:
-    if not (repo / "tests").is_dir():
-        return None
+# The count is read from pytest's summary line as printed at verbosity -1 without colour, so both are set
+# here, last on the command line. pytest reads `addopts` and `PYTEST_ADDOPTS` first: a `-q` given here used
+# to stack with a project's own, and at -2 pytest prints `tests/test_x.py: 12` per file and no summary, so
+# the count was "unavailable" on every push. Dropping `addopts` instead would change what is collected
+# (`--import-mode`, `-p`); summing the per-file lines would leave out the tests a `-m`/`-k` deselects, which
+# the summary counts.
+COLLECT_ARGS = ("--collect-only", "--color=no", "--verbosity=-1")
+COLLECT_TIMEOUT = 300  # seconds
+SUMMARY_RE = re.compile(r"(\d+) tests? collected(?: \(\d+ deselected\))?(, \d+ errors?)?")
+# pytest's own banners for a session it interrupted or was told to leave. Matched by their text: a plugin may
+# print a `!!! ... !!!` line of its own after a full collection.
+STOPPED_RE = re.compile(r"^!{3,} (?:(?:[\w.]+\.)?(?:Exit|Interrupted): |KeyboardInterrupt )", re.M)
+
+
+class Collection(NamedTuple):
+    """What `pytest --collect-only` established for a repository."""
+
+    tests: int | None  # the suite's test count; None unless pytest printed one for a collection that ended cleanly
+    failed: bool  # the project's own environment printed a count for a collection that did not end cleanly
+    outcome: str  # how the run ended, for the push output
+
+
+def _pytest_cmd(repo: Path) -> tuple[list[str], bool]:
+    """How pytest is started, and whether that is the project's own uv environment.
+
+    Without a pyproject.toml it is a throwaway environment: pytest, and none of the project's dependencies.
+    """
     if (repo / "pyproject.toml").is_file():
-        cmd = [*_uv_prefix(repo), "pytest", "--collect-only", "-q"]
-    else:
-        cmd = ["uvx", "--quiet", "pytest", "--collect-only", "-q"]
+        return [*_uv_prefix(repo), "pytest"], True
+    return ["uvx", "--quiet", "pytest"], False
+
+
+def parse_collection(stdout: str) -> tuple[int | None, bool]:
+    """(tests collected, whether pytest says that is not the whole suite) from the last summary line.
+
+    It says so with errors next to the count, or with a banner that it stopped early: `!!! Interrupted: 1 error
+    during collection !!!`, `!!! KeyboardInterrupt !!!`, `!!! _pytest.outcomes.Exit: ... !!!`.
+    """
+    found = SUMMARY_RE.findall(stdout)
+    if found:
+        return int(found[-1][0]), bool(found[-1][1] or STOPPED_RE.search(stdout))
+    m = re.search(r"^(\d+) tests?\b", stdout, re.M)
+    return (int(m.group(1)) if m else None), False
+
+
+def _closing_line(r: subprocess.CompletedProcess[str]) -> str:
+    """pytest's last line, with the first module it lists as an error or else its own crash line.
+
+    When pytest printed nothing, the runner's error line instead.
+    """
+    out = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    if out:
+        listed = max((i for i, ln in enumerate(out) if "short test summary info" in ln), default=len(out))
+        named = [ln for ln in out[listed:] if ln.startswith("ERROR ")][:1]
+        crashed = [ln for ln in out if ln.startswith("INTERNALERROR>")][-1:]
+        return "; ".join([out[-1], *(named or crashed)])[:200]
+    err = [ln.strip() for ln in r.stderr.splitlines() if ln.strip()]
+    return ([ln for ln in err if "error:" in ln.lower()] or err or ["no output"])[-1][:200]
+
+
+def collected_tests(repo: Path) -> Collection:
+    if not (repo / "tests").is_dir():
+        return Collection(None, False, "no tests/ directory")
+    cmd, own_env = _pytest_cmd(repo)
+    via = " ".join(a for a in cmd if a not in ("--quiet", "--directory", str(repo)))
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=repo)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    m = re.search(r"(\d+) tests? collected", r.stdout) or re.search(r"^(\d+) tests?\b", r.stdout, re.M)
-    return int(m.group(1)) if m else None
+        r = subprocess.run(
+            [*cmd, *COLLECT_ARGS], capture_output=True, text=True, errors="replace", timeout=COLLECT_TIMEOUT, cwd=repo
+        )
+    except subprocess.TimeoutExpired:
+        return Collection(None, False, f"timed out after {COLLECT_TIMEOUT} s via `{via}`")
+    except OSError as exc:
+        return Collection(None, False, f"could not start `{via}`: {type(exc).__name__}")
+    tests, partial = parse_collection(r.stdout)
+    # Exit 1 with nothing else wrong is a plugin failing the session after a full collection. Any other
+    # non-zero exit (2 interrupted, 3 internal error) means part of the suite may be missing from the count.
+    clean = tests is not None and not partial and r.returncode in (0, 1)
+    outcome = f"exit {r.returncode} via `{via}`: {_closing_line(r)}"
+    return Collection(tests if clean else None, own_env and tests is not None and not clean, outcome)
 
 
 # --------------------------------------------------------------------------- driver
@@ -311,12 +379,23 @@ def check(repo: Path, base: str | None, head: str, runtime: bool = True) -> tupl
         issues += command_issues(repo, advertised_commands(readme, clis))
         claims = count_claims(readme)
         if claims:
-            n = collected_tests(repo)
-            if n is None:
-                notes.append(f"README claims test counts {sorted(claims)} but pytest collection was unavailable")
+            # A count is compared only when the collection ended cleanly. One from a collection that did not
+            # is refused in the project's own environment and only noted in a throwaway one, which lacks the
+            # project's dependencies by construction. No count at all stays a note: it is also what another
+            # runner's `tests/` looks like, or an environment without the project's pytest plugins.
+            got = collected_tests(repo)
+            if got.failed:
+                issues.append(
+                    f"[count] pytest --collect-only did not end cleanly ({got.outcome}), so the README.md test counts "
+                    f"{sorted(claims)} cannot be checked"
+                )
+            elif got.tests is None:
+                notes.append(
+                    f"README claims test counts {sorted(claims)} but pytest collection was unavailable ({got.outcome})"
+                )
             else:
-                for c in sorted(claims - {n}):
-                    issues.append(f"[count] README.md claims {c} tests but pytest collects {n}")
+                for c in sorted(claims - {got.tests}):
+                    issues.append(f"[count] README.md claims {c} tests but pytest collects {got.tests}")
     elif runtime:
         notes.append("runtime checks (CLI --help, pytest count) skipped: pushed commit is not the checked-out HEAD")
 
