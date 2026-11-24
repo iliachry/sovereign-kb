@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -3346,6 +3348,29 @@ def test_swm_rsi_probe_distillation_and_episodic_delivery_bridge(tmp_path: Path)
     assert log_path.read_text(encoding="utf-8").count("## SWM Autonomous Delivery — `swm-op1766-a2`") == 1
 
 
+def _pin_clock(monkeypatch: pytest.MonkeyPatch, when: datetime.datetime, *modules: types.ModuleType) -> None:
+    """Make `datetime.date.today()` and `datetime.datetime.now()` return `when` inside `modules`.
+
+    Each module must read the clock through its own `import datetime`; only that module's reference is replaced,
+    so the rest of the process keeps the real clock.
+    """
+
+    class _PinnedDate(datetime.date):
+        @classmethod
+        def today(cls) -> _PinnedDate:
+            return cls(when.year, when.month, when.day)
+
+    class _PinnedDateTime(datetime.datetime):
+        @classmethod
+        def now(cls, tz: datetime.tzinfo | None = None) -> _PinnedDateTime:
+            return cls.combine(when.date(), when.time(), tzinfo=tz)
+
+    pinned = types.ModuleType("datetime")
+    pinned.__dict__.update(vars(datetime), date=_PinnedDate, datetime=_PinnedDateTime)
+    for module in modules:
+        monkeypatch.setattr(module, "datetime", pinned)
+
+
 def test_hybrid_retrieve_corpus_and_embedding_cache_equivalence_and_invalidation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3353,8 +3378,14 @@ def test_hybrid_retrieve_corpus_and_embedding_cache_equivalence_and_invalidation
     import urllib.request
 
     from sovereign_kb import cli as cli_mod
+    from sovereign_kb import rsi as rsi_mod
+    from sovereign_kb.cli import config_db, retrieval_notes
     from sovereign_kb.rsi import build_benchmark_suite, tune_retrieval_policy
 
+    # Pinned clock: `skb capture` puts the date and a `## HH:MM` heading into the indexed corpus, and the
+    # episodic vector-eligibility rule and the RSI cycle read today's date. On the real clock the first RSI cycle
+    # below was rolled back at some minutes of the day (11:29, for one) and deleted the distillation file.
+    _pin_clock(monkeypatch, datetime.datetime(2026, 11, 24, 12, 0), retrieval_notes, config_db, rsi_mod)
     monkeypatch.delenv("KB_NO_EMBED", raising=False)
     monkeypatch.setenv("KB_HIPS_BIN", "")
     monkeypatch.setattr(cli_mod, "_EMBED_CIRCUIT_OPEN", False)
