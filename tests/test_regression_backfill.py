@@ -186,3 +186,37 @@ def test_bc89b21_tuning_reverts_when_heldout_regresses(tmp_path: Path, monkeypat
     assert len(heldout_calls) == 2  # baseline + the single winner; never during the search
     assert res["delta_j"] == 0.0 and res["heldout_delta_j"] == 0.0
     assert {k: res["policy"][k] for k in base if k != "updated_at"} == {k: base[k] for k in base if k != "updated_at"}
+
+
+def test_readme_surface_accepts_nested_group_command(tmp_path: Path) -> None:
+    """A new Typer group command (`app tenants rotate`) counts as documented when README shows the nested form."""
+    import subprocess
+
+    from sovereign_kb.readme_check import check
+
+    repo = tmp_path / "svc"
+    (repo / "src" / "svc").mkdir(parents=True)
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "pyproject.toml").write_text('[project]\nname = "svc"\n[project.scripts]\nsvc = "svc.cli:main"\n')
+    cli = repo / "src" / "svc" / "cli.py"
+    cli.write_text('@tenants_app.command("list")\ndef tenants_list():\n    pass\n')
+    (repo / "README.md").write_text("# svc\n\n```bash\nsvc tenants list\n```\n")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+
+    cli.write_text(cli.read_text() + '\n@tenants_app.command("rotate")\ndef tenants_rotate():\n    pass\n')
+    git("commit", "-qam", "add rotate")
+    issues, _ = check(repo, base, git("rev-parse", "HEAD"), runtime=False)
+    assert any("new CLI command `rotate`" in i for i in issues)
+
+    (repo / "README.md").write_text("# svc\n\n```bash\nsvc tenants list\nsvc tenants rotate acme\n```\n")
+    git("commit", "-qam", "docs")
+    issues, _ = check(repo, base, git("rev-parse", "HEAD"), runtime=False)
+    assert not any("rotate" in i for i in issues)

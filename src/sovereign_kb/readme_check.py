@@ -156,6 +156,22 @@ def advertised_commands(readme: str, clis: set[str]) -> set[tuple[str, str]]:
     return found
 
 
+def advertised_nested(readme: str, clis: set[str]) -> set[str]:
+    """Third tokens of `<cli> <group> <sub>` lines: nested Typer/Click group commands (`app tenants rotate`)."""
+    found: set[str] = set()
+    lines: list[str] = []
+    for block in FENCE_RE.findall(readme):
+        lines.extend(block.splitlines())
+    lines.extend(re.findall(r"`([^`\n]+)`", readme))
+    for line in lines:
+        toks = line.strip().lstrip("$ ").split()
+        if toks[:2] == ["uv", "run"]:
+            toks = toks[2:]
+        if len(toks) >= 3 and toks[0] in clis and all(re.fullmatch(r"[a-z][\w-]*", t) for t in toks[1:3]):
+            found.add(toks[2])
+    return found
+
+
 def _uv_prefix(repo: Path) -> list[str]:
     base = ["uv", "run", "--quiet", "--directory", str(repo)]
     return base + (["--frozen"] if (repo / "uv.lock").is_file() else [])
@@ -232,7 +248,9 @@ def surface_issues(repo: Path, base: str, head: str, readme: str, clis: set[str]
         if f != "README.md" and (f.endswith("/README.md") or (f.startswith("docs/") and f.endswith(".md"))):
             docs += "\n" + (_show(repo, head, f) or "")
     documented_c = (
-        {sub for _, sub in advertised_commands(docs, clis)} if clis else set(re.findall(r"\b([a-z][\w-]*)\b", docs))
+        {sub for _, sub in advertised_commands(docs, clis)} | advertised_nested(docs, clis)
+        if clis
+        else set(re.findall(r"\b([a-z][\w-]*)\b", docs))
     )
     documented_r = {_norm_route(m) for m in README_ROUTE_RE.findall(docs)}
     issues: list[str] = []
