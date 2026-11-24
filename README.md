@@ -48,6 +48,8 @@ skb search "SQLite offline"   # prints the matching passage with its file path a
 uv tool install git+https://github.com/iliachry/sovereign-kb.git
 ```
 
+Installing from a local checkout instead? `uv tool install ~/path/to/sovereign-kb` installs a *copy*, which keeps running the old code after you commit to the checkout. `skb` notices: once the checkout has commits the copy lacks, every `skb`, `gwi`, `organon` and `evr` run prints one stderr line, and `skb verify` fails Gate 0 until you run `uv tool upgrade sovereign-kb --reinstall`. `skb --version` says which state you are in. `uv tool install --editable ~/path/to/sovereign-kb` runs the checkout itself and cannot fall behind.
+
 ### 2. Initialize, Capture & Search
 
 ```bash
@@ -137,7 +139,8 @@ skb dashboard --export
 | Search across notes (human output, `--json` for agents, `--explain` for scores) | `skb search "CORS issue"` |
 | Ask a synthesized question via local Ollama / OpenAI-compatible LLM | `skb ask "How do we handle CORS?"` |
 | Re-index modified Markdown files | `skb sync` |
-| Run the 6-Gate Vault Doctor (`--heal` to auto-fix frontmatter & orphans) | `skb verify` |
+| Run the 6-Gate Vault Doctor (`--heal` to auto-fix frontmatter & orphans), after Gate 0 checks that an installed copy of `skb` matches its checkout | `skb verify` |
+| Show the version and whether this installed copy matches its checkout (`editable`, `fresh`, `STALE`, `UNVERIFIED`) | `skb --version` |
 | Atomically pull, sync, verify, commit, and push vault changes to Git (`skb pull`, `skb git-sync`, `skb push`) | `skb push -m "docs: update notes"` |
 | Open the interactive `[[Wikilink]]` Knowledge Graph dashboard | `skb dashboard` |
 | Print your Tier-0 profile (`00-identity/README-me.md` + `01-now/now.md`) | `skb me` |

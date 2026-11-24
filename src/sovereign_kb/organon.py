@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, install_check
 from .audit_registry import (
     AUDIT_REGISTRY_PATH,
     evaluate_subproject_freshness,
@@ -894,6 +894,8 @@ def sync_organon_state_remote(peer: str | None = None, quiet: bool = False) -> d
 
 
 def main_cli(argv: list[str] | None = None) -> None:
+    if argv is None:
+        install_check.warn_if_stale()
     args_list = list(sys.argv[1:] if argv is None else argv)
     if not args_list:
         status = collect_organon_status(all_nodes=False)
