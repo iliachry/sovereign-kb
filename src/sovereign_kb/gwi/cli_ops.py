@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from sovereign_kb import install_check
 from sovereign_kb.gwi_core import (
     ARCHETYPE_WEIGHTS,
     DEFAULT_K,
@@ -713,6 +714,8 @@ def cmd_gwi(args: argparse.Namespace) -> None:
 
 def main_cli(argv: list[str] | None = None) -> None:
     """Standalone `gwi` CLI entrypoint."""
+    if argv is None:
+        install_check.warn_if_stale()
     parser = argparse.ArgumentParser(
         prog="gwi",
         description="Unified Goldwood Index (G >= 9.0) & Global Watchability Index (GWI+ v1.4.0) Quality Gate CLI",

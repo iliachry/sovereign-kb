@@ -62,10 +62,11 @@ skb hips bench "Block-Max WAND"
 
 ## 2. The 6-Gate Deterministic Vault Doctor (`skb verify`)
 
-`skb verify` (aliased as `skb doctor` and `skb lint`) enforces six deterministic invariants across your vault and environment:
+`skb verify` (aliased as `skb doctor` and `skb lint`) enforces six deterministic invariants across your vault and environment, after Gate 0 has checked the doctor itself:
 
 ```text
 === Sovereign-KB Deterministic Verification (6-Gate Doctor): PASS ===
+  Gate 0 (Tool Install)       : PASS (editable install)
   Gate 1 (Frontmatter Schema) : PASS
   Gate 2 (Wikilink Integrity) : PASS
   Gate 3 (Graph Connectivity) : PASS
@@ -76,6 +77,7 @@ skb hips bench "Block-Max WAND"
 
 | Gate | Invariant Verified |
 | :--- | :--- |
+| **Gate 0 — Tool Install** | When `skb` runs from a copy installed from a local checkout (`uv tool install <dir>`, recorded in the copy's PEP 610 `direct_url.json`), its Python files are compared by content with that checkout, and git sorts the differences: committed ones fail the gate (`stale`, fix: `uv tool upgrade sovereign-kb --reinstall`), uncommitted edits only warn, and a checkout that no longer exists warns as `unverifiable`, never as fresh. While the copy is stale or unverifiable, every `skb`, `gwi`, `organon` and `evr` run prints one stderr line saying so. Editable, Git-URL and package-index installs have nothing local to fall behind and pass silently. Code: `src/sovereign_kb/install_check.py`. |
 | **Gate 1 — Frontmatter Schema** | Every note (except `AGENTS.md`) defines `title`, `type`, `updated`, and `tags` in YAML frontmatter. |
 | **Gate 2 — Wikilink Integrity** | Every `[[wikilink]]` outside fenced/inline code resolves to an existing vault note (`0` broken links). |
 | **Gate 3 — Graph Connectivity** | Every note (except root `INDEX.md` and `AGENTS.md`) has $\ge 1$ inbound `[[wikilink]]` (`0` orphan notes). |

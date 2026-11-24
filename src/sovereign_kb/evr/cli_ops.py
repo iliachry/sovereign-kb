@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .. import install_check
 from .builder import EvrBuilder
 from .capsules import (
     create_showcase_evr_capsule,
@@ -584,6 +585,8 @@ def cmd_evr(args: argparse.Namespace) -> None:
 
 
 def main_cli(argv: list[str] | None = None) -> None:
+    if argv is None:
+        install_check.warn_if_stale()
     parser = argparse.ArgumentParser(
         prog="evr",
         description="The `.evr` ('Everything' v1.0) Universal Zero-Copy Polyglot File Format CLI",

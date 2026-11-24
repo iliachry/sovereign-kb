@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
+from .. import install_check
 from .config_db import resolve_vault_dir
 from .ops import cmd_certify, cmd_git_sync, cmd_hips, cmd_rsi
 from .retrieval_notes import cmd_ask, cmd_capture, cmd_me, cmd_resume, cmd_search, cmd_status
@@ -25,9 +28,27 @@ def _add_opt_parser(
     return sub.add_parser(name, help=help_text) if help_text else sub.add_parser(name)
 
 
-def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
-    from sovereign_kb import __version__
+class _VersionAction(argparse.Action):
+    """`--version`: the package version, then whether this installed copy matches its source checkout."""
 
+    def __init__(self, option_strings: Sequence[str], dest: str = argparse.SUPPRESS, **kwargs: Any) -> None:
+        kwargs.setdefault("default", argparse.SUPPRESS)
+        super().__init__(option_strings=option_strings, dest=dest, nargs=0, **kwargs)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[Any] | None,
+        option_string: str | None = None,
+    ) -> None:
+        from sovereign_kb import __version__
+
+        sys.stdout.write(f"{parser.prog} {__version__}\n{install_check.version_line()}\n")
+        parser.exit()
+
+
+def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     epilog = (
         (
             "Command Groups:\n"
@@ -45,7 +66,12 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "-V",
+        "--version",
+        action=_VersionAction,
+        help="Show the version and whether this installed copy matches its source checkout, then exit",
+    )
     parser.add_argument("--vault", help="Explicit path to vault directory (overrides KB_VAULT_DIR)")
     parser.add_argument(
         "--help-all",
@@ -426,6 +452,8 @@ def _normalize_cli_aliases(raw_argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> None:
     raw_argv = sys.argv[1:] if argv is None else list(argv)
+    if argv is None and not {"-V", "--version"} & set(raw_argv):  # --version reports the install state itself
+        install_check.warn_if_stale()
     if "--help-all" in raw_argv:
         parser = build_parser(show_all_aliases=True)
         parser.print_help()

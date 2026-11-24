@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .. import install_check
 from .config_db import get_db, resolve_hips_bin, resolve_vault_dir
 from .markdown_embed import (
     _is_vault_no_embed,
@@ -26,7 +27,9 @@ from .sync_hips import _is_index_stale, _verify_fts_index, cmd_sync
 
 def cmd_verify(args, no_auto_sync: bool = False) -> None:
     """
-    6-Gate Deterministic Vault & Environment Doctor:
+    6-Gate Deterministic Vault & Environment Doctor, preceded by a check of the doctor itself:
+      Gate 0: Tool Install Freshness (an installed copy whose source checkout has newer commits fails;
+              uncommitted edits there or an unverifiable copy only warn; see `sovereign_kb.install_check`)
       Gate 1: Frontmatter Schema & Date Freshness
       Gate 2: Wikilink Integrity (0 broken [[wikilinks]])
       Gate 3: Graph Connectivity (0 unintended orphan notes)
@@ -67,7 +70,8 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
     conn = get_db(vault_dir)
     md_files = list_vault_md_files(vault_dir)
     stem_lookup = build_stem_lookup(vault_dir, md_files)
-    violations: list[dict] = []
+    install, install_violations, warnings = install_check.verify_gate()
+    violations: list[dict] = list(install_violations)
 
     inbound_counts: dict[str, int] = {str(p.relative_to(vault_dir)): 0 for p in md_files}
     for p in md_files:
@@ -337,8 +341,11 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
         "hips_indexed": hips_ready,
         "links": links_count,
         "skills_checked": len(all_skills_to_check),
+        "install": install,
         "violations_count": len(violations),
         "violations": violations,
+        "warnings_count": len(warnings),
+        "warnings": warnings,
     }
 
     if getattr(args, "json", False):
@@ -346,6 +353,7 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
     else:
         hips_tag = ", HIPS WAND: OK" if hips_ready else ""
         print(f"=== Sovereign-KB Deterministic Verification (6-Gate Doctor): {report['status']} ===")
+        print(f"  {install_check.GATE:<27} : {install_check.gate_summary(install)}")
         print(
             f"  Gate 1 (Frontmatter Schema) : {'PASS' if not any(v['gate'].startswith('Gate 1') for v in violations) else 'FAIL'}"
         )
@@ -372,6 +380,10 @@ def cmd_verify(args, no_auto_sync: bool = False) -> None:
                 print(
                     "\nTip: Run 'skb verify --heal' to auto-generate missing YAML frontmatter and link orphan notes into INDEX.md."
                 )
+        if warnings:
+            print("\nWarnings (not failing):")
+            for w in warnings:
+                print(f"  - [{w['gate']}] {w['file']}: {w['issue']}")
 
     if violations:
         sys.exit(1)
