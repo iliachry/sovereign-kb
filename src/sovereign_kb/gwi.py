@@ -2044,10 +2044,11 @@ def evaluate_video_profile(
         conscience_clean=v_meta["probed"] and v_meta["has_video"],
     )
 
+    below_root = len(root.parts)  # `.git` / `node_modules` are judged below the project root, not in the path to it
     total_dir_bytes = sum(
         p.stat().st_size
         for p in root.rglob("*")
-        if p.is_file() and ".git" not in p.parts and "node_modules" not in p.parts
+        if p.is_file() and {".git", "node_modules"}.isdisjoint(p.parts[below_root:])
     )
     elegance = compute_kolmogorov_elegance(total_dir_bytes, max(1, int(v_meta["size_bytes"] * 1.25)))
 

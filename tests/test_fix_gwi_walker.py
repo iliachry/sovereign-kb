@@ -73,3 +73,65 @@ def test_empty_source_scan_is_a_p0_blocker_and_fails(tmp_path: Path) -> None:
     (code / "src" / "main.go").write_text("package main\n", encoding="utf-8")
     rep2 = evaluate_app_profile(code)
     assert "GWI-APP-E01" not in [b["id"] for b in rep2["blockers"]]
+
+
+def test_video_byte_count_reads_a_project_stored_under_node_modules(tmp_path: Path) -> None:
+    from sovereign_kb.gwi import evaluate_video_profile
+
+    # The byte count behind Kolmogorov elegance weighs the project's own files even when the path that leads to
+    # the project contains `node_modules`, and still leaves out `node_modules/` and `.git/` inside the project.
+    kit = tmp_path / "node_modules" / "pkg" / "video-kit"
+    (kit / "node_modules" / "dep").mkdir(parents=True)
+    (kit / ".git").mkdir()
+    (kit / "master.mp4").write_bytes(b"\x00" * 1000)
+    (kit / "notes.txt").write_bytes(b"\x00" * 2000)
+    (kit / "node_modules" / "dep" / "blob.bin").write_bytes(b"\x00" * 50_000)
+    (kit / ".git" / "pack.bin").write_bytes(b"\x00" * 50_000)
+
+    rep = evaluate_video_profile(kit)
+    # 3000 project bytes against an essential 1250 (1.25 x the 1000-byte master): exp(-(3000 - 1250) / 1250).
+    assert rep["kolmogorov_elegance"] == 0.2466
+
+
+def test_evidence_fingerprint_reads_a_project_stored_under_build(tmp_path: Path) -> None:
+    from sovereign_kb.audit_registry import compute_subproject_fingerprint
+
+    def evidence_sha(root: Path) -> str:
+        return str(compute_subproject_fingerprint(root, ".")["evidence_sha"])
+
+    # Stored under `build/`, new evidence must still change the fingerprint (it was the hash of nothing).
+    repo = tmp_path / "build" / "app"
+    report = repo / "evidence" / "playwright" / "report.json"
+    report.parent.mkdir(parents=True)
+    report.write_text('{"consoleErrors": 0}', encoding="utf-8")
+    clean_run = evidence_sha(repo)
+    report.write_text('{"consoleErrors": 7}', encoding="utf-8")
+    assert evidence_sha(repo) != clean_run
+
+    # `node_modules/` inside the project still stays out of the fingerprint.
+    own_evidence_only = evidence_sha(repo)
+    (repo / "evidence" / "node_modules" / "dep").mkdir(parents=True)
+    (repo / "evidence" / "node_modules" / "dep" / "package.json").write_text("{}", encoding="utf-8")
+    assert evidence_sha(repo) == own_evidence_only
+
+
+def test_readme_reference_probe_reads_a_project_stored_under_dot_git(tmp_path: Path) -> None:
+    from sovereign_kb.readme_check import reference_issues_worktree
+
+    def make(root: Path, readme: str) -> Path:
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+        (root / "README.md").write_text(readme, encoding="utf-8")
+        return root
+
+    # A non-git project whose path contains `.git` still has its files listed (every path was reported dead).
+    stored = make(tmp_path / ".git" / "app", "# app\n\nThe code is in `src/main.py`.\n")
+    assert reference_issues_worktree(stored) == []
+
+    # A `.git/` directory inside the project is still not something the README may point at.
+    plain = make(tmp_path / "app", "# app\n\nSee the [hook](.git/hooks/pre-push) and `src/main.py`.\n")
+    (plain / ".git" / "hooks").mkdir(parents=True)
+    (plain / ".git" / "hooks" / "pre-push").write_text("#!/bin/sh\n", encoding="utf-8")
+    issues = reference_issues_worktree(plain)
+    assert len(issues) == 1
+    assert ".git/hooks/pre-push" in issues[0]

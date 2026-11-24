@@ -119,7 +119,10 @@ def reference_issues_worktree(root: Path, doc_path: Path | None = None) -> list[
         files = set(ls.stdout.splitlines())
         files |= set(_git(root, "ls-files", "--others", "--exclude-standard").stdout.splitlines())
     else:
-        files = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and ".git" not in p.parts}
+        below_root = len(root.parts)  # `.git` is judged below the audited root, not in the path that leads to it
+        files = {
+            str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and ".git" not in p.parts[below_root:]
+        }
     dirs: set[str] = set()
     for f in files:
         parts = f.split("/")[:-1]
