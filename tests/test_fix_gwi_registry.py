@@ -244,6 +244,29 @@ def test_gwi_source_sha_tracks_file_bytes(tmp_path: Path, monkeypatch: pytest.Mo
     assert ar.compute_gwi_source_sha() != before
 
 
+def test_gwi_source_sha_tracks_gwi_package_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The scorer lives in the `gwi/` package: editing or adding any of its modules must change the hash too.
+    pkg = tmp_path / "pkg"
+    (pkg / "gwi").mkdir(parents=True)
+    for name in ar._GWI_SOURCE_FILES:
+        (pkg / name).write_text(f"# {name}\n")
+    (pkg / "gwi" / "__init__.py").write_text("")
+    (pkg / "gwi" / "profile_app.py").write_text("SCORE = 1\n")
+    monkeypatch.setattr(ar, "__file__", str(pkg / "audit_registry.py"))
+    before = ar.compute_gwi_source_sha()
+    (pkg / "gwi" / "profile_app.py").write_text("SCORE = 2  # edited scorer\n")
+    edited = ar.compute_gwi_source_sha()
+    assert edited != before
+    (pkg / "gwi" / "lenses_new.py").write_text("X = 1\n")
+    assert ar.compute_gwi_source_sha() != edited
+
+
+def test_gwi_source_sha_covers_the_shipped_scorer_package() -> None:
+    sources = dict(ar._gwi_source_paths(Path(ar.__file__).resolve().parent))
+    assert {"gwi_core.py", "gwi_science.py", "gwi/profile_app.py", "gwi/lenses_eval.py", "gwi/utils.py"} <= set(sources)
+    assert all(p.is_file() for p in sources.values())
+
+
 # --- 5. Subproject fingerprint ignores evidence/ -------------------------------------------
 
 

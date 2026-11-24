@@ -33,7 +33,9 @@ AUDIT_REGISTRY_PATH = (
     if os.environ.get("SWM_AUDIT_REGISTRY", "").strip()
     else _DEFAULT_AUDIT_REGISTRY_PATH
 )
-_GWI_SOURCE_FILES = ("gwi.py", "gwi_core.py", "gwi_science.py", "gwi_lenses.py")
+# GWI scorer sources: the single-file modules next to this one, plus every module of the `gwi/` package.
+_GWI_SOURCE_FILES = ("gwi_core.py", "gwi_science.py", "gwi_lenses.py")
+_GWI_SOURCE_PACKAGES = ("gwi",)
 _GWI_SRC_HASH_CACHE: dict[tuple[tuple[str, int, int], ...], str] = {}
 
 
@@ -41,13 +43,21 @@ class AuditRegistryCorruptError(RuntimeError):
     """Raised when `audit_registry.json` cannot be parsed (a backup copy is preserved next to it)."""
 
 
+def _gwi_source_paths(pkg_dir: Path) -> list[tuple[str, Path]]:
+    """(label, path) of every GWI scorer source file, in a stable order."""
+    paths = [(name, pkg_dir / name) for name in _GWI_SOURCE_FILES]
+    for pkg in _GWI_SOURCE_PACKAGES:
+        paths.extend((f"{pkg}/{p.name}", p) for p in sorted((pkg_dir / pkg).glob("*.py")))
+    return paths
+
+
 def compute_gwi_source_sha() -> str:
     """Short hash of the GWI module sources so uncommitted scorer edits invalidate cached PASSes."""
-    pkg_dir = Path(__file__).resolve().parent
+    sources = _gwi_source_paths(Path(__file__).resolve().parent)
     stat_key: list[tuple[str, int, int]] = []
-    for name in _GWI_SOURCE_FILES:
+    for name, path in sources:
         try:
-            st = (pkg_dir / name).stat()
+            st = path.stat()
             stat_key.append((name, st.st_mtime_ns, st.st_size))
         except OSError:
             stat_key.append((name, -1, -1))
@@ -56,10 +66,10 @@ def compute_gwi_source_sha() -> str:
     if cached is not None:
         return cached
     h = hashlib.sha256()
-    for name in _GWI_SOURCE_FILES:
+    for name, path in sources:
         h.update(name.encode("utf-8") + b"\0")
         try:
-            h.update((pkg_dir / name).read_bytes())
+            h.update(path.read_bytes())
         except OSError:
             h.update(b"<missing>")
     digest = h.hexdigest()[:16]

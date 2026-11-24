@@ -285,6 +285,13 @@ def _find_module_file(root: Path, name: str) -> Path | None:
     return None
 
 
+def _module_source_files(path: Path) -> list[Path]:
+    """Files that make up a declared module: the file itself, or every module of a package (`__init__.py`)."""
+    if path.name == "__init__.py":
+        return sorted(path.parent.rglob("*.py"))
+    return [path]
+
+
 def _imported_modules(path: Path) -> set[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
@@ -316,7 +323,10 @@ def measure_barbell_isolation(root: Path) -> dict[str, Any]:
         if path is None:
             missing.append(core)
             continue
-        for imp in sorted(_imported_modules(path)):
+        imported: set[str] = set()
+        for src in _module_source_files(path):
+            imported |= _imported_modules(src)
+        for imp in sorted(imported):
             for exp in bb["experimental"]:
                 if _matches_module(imp, exp) and f"{core} -> {exp}" not in leaks:
                     leaks.append(f"{core} -> {exp}")

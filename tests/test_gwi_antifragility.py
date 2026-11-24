@@ -190,6 +190,21 @@ def test_barbell_does_not_confuse_name_prefixes(tmp_path: Path) -> None:
     assert _status(ctx, "af.barbell_isolation") == "PASS"
 
 
+def test_barbell_inspects_every_module_of_a_core_package(tmp_path: Path) -> None:
+    # A core module declared by its package name is judged by all of its modules, not only `__init__.py`.
+    pkg = tmp_path / "src" / "pkg"
+    (pkg / "core").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "core" / "__init__.py").write_text("from .clean import A\n", encoding="utf-8")
+    (pkg / "core" / "clean.py").write_text("A = 1\n", encoding="utf-8")
+    (pkg / "core" / "leaky.py").write_text("def f():\n    from ..lab import X\n    return X\n", encoding="utf-8")
+    (pkg / "lab.py").write_text("X = 1\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.gwi.barbell]\ncore = ["core"]\nexperimental = ["lab"]\n', encoding="utf-8"
+    )
+    assert af.measure_barbell_isolation(tmp_path)["leaks"] == ["core -> lab"]
+
+
 def test_barbell_undeclared_is_info(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     af.apply_antifragility_probes(ctx)
