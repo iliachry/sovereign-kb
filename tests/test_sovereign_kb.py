@@ -25,6 +25,21 @@ from sovereign_kb.cli import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+_OPSEC_SKIPPED_NAMES = (".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".swm", "FLEET_ATLAS.md")
+_OPSEC_SCANNED_SUFFIXES = (".py", ".md", ".toml", ".sh", ".json", ".yaml", ".yml")
+
+
+def _opsec_scannable_files(root: Path) -> list[Path]:
+    """The files the F-02 leak scan reads under `root`. Skipped names are judged below `root` only."""
+    below_root = len(root.parts)
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if not any(part in _OPSEC_SKIPPED_NAMES for part in path.parts[below_root:])
+        and path.is_file()
+        and path.suffix in _OPSEC_SCANNED_SUFFIXES
+    )
+
 
 def test_zero_private_ip_or_secret_leaks() -> None:
     """F-02: Verify zero private Tailscale/lab IPs, local user paths, or secret tokens exist anywhere in the repo (including tests)."""
@@ -58,21 +73,15 @@ def test_zero_private_ip_or_secret_leaks() -> None:
         ),
     ]
     token_re = re.compile(r"[A-Za-z0-9._-]+")
-    for path in REPO_ROOT.rglob("*"):
-        if any(
-            part in (".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".swm", "FLEET_ATLAS.md")
-            for part in path.parts
-        ):
-            continue
-        if path.is_file() and path.suffix in (".py", ".md", ".toml", ".sh", ".json", ".yaml", ".yml"):
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            rel = path.relative_to(REPO_ROOT)
-            for label, rx in forbidden_regexes:
-                m = rx.search(content)
-                assert m is None, f"Forbidden {label} ('{m.group(0)}') leaked in {rel}"
-            for tok in set(token_re.findall(content)):
-                digest = hashlib.sha256(tok.encode("utf-8")).hexdigest()
-                assert digest not in forbidden_token_sha256, f"Forbidden private identifier leaked in {rel}"
+    for path in _opsec_scannable_files(REPO_ROOT):
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        rel = path.relative_to(REPO_ROOT)
+        for label, rx in forbidden_regexes:
+            m = rx.search(content)
+            assert m is None, f"Forbidden {label} ('{m.group(0)}') leaked in {rel}"
+        for tok in set(token_re.findall(content)):
+            digest = hashlib.sha256(tok.encode("utf-8")).hexdigest()
+            assert digest not in forbidden_token_sha256, f"Forbidden private identifier leaked in {rel}"
 
     if (REPO_ROOT / ".git").exists():
         tags = subprocess.run(
@@ -83,6 +92,20 @@ def test_zero_private_ip_or_secret_leaks() -> None:
         ).stdout.splitlines()
         for legacy_tag in ("v0.2.0", "v0.3.0"):
             assert legacy_tag not in tags, f"Legacy pre-rewrite tag {legacy_tag} must not exist"
+
+
+def test_opsec_scan_reads_a_checkout_stored_under_a_skipped_name(tmp_path: Path) -> None:
+    """F-02: The leak scan must not go blind when the checkout itself lives under `.swm/`, `.venv/` or `.git/`."""
+    for ancestor in (".swm", ".venv", ".git"):
+        root = tmp_path / ancestor / "checkout"
+        (root / "src").mkdir(parents=True)
+        (root / ".venv" / "lib").mkdir(parents=True)
+        (root / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (root / "README.md").write_text("# checkout\n", encoding="utf-8")
+        # Skipped names inside the checkout still stay out of the scan.
+        (root / ".venv" / "lib" / "dep.py").write_text("y = 2\n", encoding="utf-8")
+
+        assert _opsec_scannable_files(root) == [root / "README.md", root / "src" / "mod.py"], ancestor
 
 
 def test_fold_accents_and_fts_query_compiler() -> None:

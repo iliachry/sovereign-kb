@@ -3122,9 +3122,10 @@ echo "=== [{proj_name}] ALL QUALITY GATES PASSED ==="
                 '    include_exts = {".tex", ".bib", ".bbl", ".sty", ".cls", ".pdf"}\n'
                 '    with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as zf:\n'
                 '        for p in sorted(root.rglob("*")):\n'
-                '            if p.is_file() and p.name != bundle.name and ".git" not in p.parts and ".venv" not in p.parts:\n'
+                "            rel = p.relative_to(root)\n"
+                '            if p.is_file() and p.name != bundle.name and ".git" not in rel.parts and ".venv" not in rel.parts:\n'
                 "                if p.suffix in include_exts:\n"
-                "                    zf.write(p, p.relative_to(root))\n"
+                "                    zf.write(p, rel)\n"
                 '    print(f"[package_arxiv] Created {bundle}")\n\n'
                 'if __name__ == "__main__":\n'
                 "    main()\n",

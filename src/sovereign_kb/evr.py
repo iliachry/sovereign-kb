@@ -1002,10 +1002,12 @@ class EvrBuilder:
             self.add_bytes(rel, target_res.read_bytes())
             return self
         root = base_dir.resolve() if base_dir is not None else target_res
+        # Ignored names are judged below the packed directory, not in the path that leads to it.
+        below_target = len(target_res.parts)
         for p in sorted(target_res.rglob("*")):
             if any(
                 part in (".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".ruff_cache")
-                for part in p.parts
+                for part in p.parts[below_target:]
             ):
                 continue
             if p.is_symlink() and not follow_symlinks:
