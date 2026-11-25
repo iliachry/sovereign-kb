@@ -3,8 +3,13 @@ stages:
 
 sovereign-kb-gate:
   stage: verify
-  image: python:3.11-slim
+  # Debian 13: its rustc (1.85) compiles the .evr interop kernel; Debian 12's does not.
+  image: python:3.11-slim-trixie
   script:
+    # The tests drive git and compile a small Rust program (the .evr interop check); the slim image
+    # has neither. GitHub's ubuntu-latest image has both.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git rustc > /dev/null
+    - git --version && rustc --version
     - pip install --no-cache-dir uv
     - uv sync --extra dev --frozen
     - uv run --extra dev ruff check .
