@@ -31,9 +31,38 @@ def _make_config(args: Any) -> JEPAConfig:
 
 
 def cmd_jepa(args: Any, resolve_vault_dir_fn: Callable[..., Path]) -> None:
-    vault_dir = resolve_vault_dir_fn(getattr(args, "vault", None))
     subcmd = getattr(args, "jepa_cmd", "status") or "status"
     as_json = bool(getattr(args, "json", False))
+
+    if subcmd == "code":
+        from .code_jepa import run_code_graph_jepa
+
+        target_raw = getattr(args, "target", None) or "."
+        repo_dir = Path(target_raw).expanduser().resolve()
+        query_sym = getattr(args, "goal", None)
+        limit = max(1, int(getattr(args, "limit", 5)))
+        epochs = int(getattr(args, "epochs", 20))
+        seed = int(getattr(args, "seed", 42))
+        res = run_code_graph_jepa(repo_dir, query_symbol=query_sym, top_k=limit, epochs=epochs, seed=seed)
+        if as_json:
+            print(json.dumps(res, indent=2))
+            return
+        print(f"=== Polyglot Code-Graph JEPA (`{repo_dir.name}`) ===")
+        print(
+            f"  Symbols={res['total_symbols']} | Edges={res['resolved_edges']} "
+            f"| Train={res['train_transitions']} | Heldout={res['heldout_transitions']}"
+        )
+        print(
+            f"  Coupling    : Raw MRR@5={res['raw_mrr5']:.4f} R@10={res['raw_r10']:.4f} "
+            f"-> JEPA MRR@5={res['jepa_mrr5']:.4f} R@10={res['jepa_r10']:.4f}"
+        )
+        seed_s = res["seed_symbol"]
+        print(f"  Seed Symbol : {seed_s['name']} ({seed_s['file_path']}:{seed_s['start_line']})")
+        for imp in res["predicted_impacts"]:
+            print(f"    • {imp['name']:32s} ({imp['file_path']}:{imp['start_line']}) E={imp['energy']:.4f}")
+        return
+
+    vault_dir = resolve_vault_dir_fn(getattr(args, "vault", None))
 
     if subcmd == "train":
         evr_raw = getattr(args, "evr", None)
@@ -242,34 +271,6 @@ def cmd_jepa(args: Any, resolve_vault_dir_fn: Callable[..., Path]) -> None:
         edges_list = res.get("added_edges", res.get("proposed_edges", []))
         for e in edges_list:
             print(f"  • {e['source_path']}  -->  {e['target_path']}  (E={e['energy']:.4f})")
-        return
-
-    if subcmd == "code":
-        from .code_jepa import run_code_graph_jepa
-
-        target_raw = getattr(args, "target", None) or "."
-        repo_dir = Path(target_raw).expanduser().resolve()
-        query_sym = getattr(args, "goal", None)
-        limit = max(1, int(getattr(args, "limit", 5)))
-        epochs = int(getattr(args, "epochs", 20))
-        seed = int(getattr(args, "seed", 42))
-        res = run_code_graph_jepa(repo_dir, query_symbol=query_sym, top_k=limit, epochs=epochs, seed=seed)
-        if as_json:
-            print(json.dumps(res, indent=2))
-            return
-        print(f"=== Polyglot Code-Graph JEPA (`{repo_dir.name}`) ===")
-        print(
-            f"  Symbols={res['total_symbols']} | Edges={res['resolved_edges']} "
-            f"| Train={res['train_transitions']} | Heldout={res['heldout_transitions']}"
-        )
-        print(
-            f"  Coupling    : Raw MRR@5={res['raw_mrr5']:.4f} R@10={res['raw_r10']:.4f} "
-            f"-> JEPA MRR@5={res['jepa_mrr5']:.4f} R@10={res['jepa_r10']:.4f}"
-        )
-        seed_s = res["seed_symbol"]
-        print(f"  Seed Symbol : {seed_s['name']} ({seed_s['file_path']}:{seed_s['start_line']})")
-        for imp in res["predicted_impacts"]:
-            print(f"    • {imp['name']:32s} ({imp['file_path']}:{imp['start_line']}) E={imp['energy']:.4f}")
         return
 
     res = jepa_status(vault_dir)

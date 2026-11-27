@@ -5,6 +5,7 @@ from __future__ import annotations
 import array
 import ast
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -357,6 +358,10 @@ def test_jepa_hierarchical_soar_heal_and_code(tmp_path: Path) -> None:
     assert cres["collapse_metrics"]["collapsed"] is False
     assert len(cres["predicted_impacts"]) >= 1
 
+    clean_home = tmp_path / "clean_home"
+    clean_home.mkdir()
+    clean_env = {k: v for k, v in os.environ.items() if k != "KB_VAULT_DIR"}
+    clean_env["HOME"] = str(clean_home)
     proc = subprocess.run(
         [
             sys.executable,
@@ -372,6 +377,8 @@ def test_jepa_hierarchical_soar_heal_and_code(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=str(mini_repo),
+        env=clean_env,
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["total_symbols"] >= 4
