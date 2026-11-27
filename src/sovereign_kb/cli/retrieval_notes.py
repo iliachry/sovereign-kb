@@ -371,16 +371,21 @@ def cmd_search(args) -> None:
 
     query = " ".join(args.query)
     engine = getattr(args, "engine", "auto")
+    use_jepa = bool(getattr(args, "jepa", False))
     results = hybrid_retrieve(
         conn,
         vault_dir,
         query,
-        top_k=args.limit,
+        top_k=max(args.limit * 4, 20) if use_jepa else args.limit,
         doc_type_filter=getattr(args, "type", None),
         tag_filter=getattr(args, "tag", None),
         engine=engine,
     )
     conn.close()
+    if use_jepa:
+        from sovereign_kb.jepa import rerank_search_with_jepa
+
+        results = rerank_search_with_jepa(vault_dir, query, results, top_k=args.limit)
     from sovereign_kb.audit_registry import is_bundled_starter_vault_path
 
     if (vault_dir / ".kb").is_dir() and not is_bundled_starter_vault_path(vault_dir) and len(query.strip()) >= 6:
@@ -435,9 +440,10 @@ def cmd_search(args) -> None:
             hips_str = (
                 f"hips_wand={r['hips_score']:.2f}#r{r['hips_rank']}" if r.get("hips_score") is not None else "hips=none"
             )
+            jepa_str = f", jepa_E={r['jepa_energy']:.4f}" if r.get("jepa_energy") is not None else ""
             print(
                 f"\n[{idx}] {r['rel_path']}#L{r['start_line']}-L{r['end_line']} — {r['heading_path']} "
-                f"(RRF={r['rrf_score']}, {hips_str}, cos={cos_str}, fts_rank={r['fts_rank']})"
+                f"(RRF={r['rrf_score']}, {hips_str}, cos={cos_str}, fts_rank={r['fts_rank']}{jepa_str})"
             )
         else:
             print(f"\n[{idx}] {r['rel_path']}#L{r['start_line']}-L{r['end_line']} — {r['heading_path']}")

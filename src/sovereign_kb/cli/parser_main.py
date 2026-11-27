@@ -55,7 +55,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
             "  Everyday Memory : init, capture, search, ask, sync, verify (doctor), dashboard (ui), status, me\n"
             "  Project & Gate  : scaffold (new), gwi (audit, goldwood)\n"
             "  Advanced & Ops  : rsi (evolve, tune, consolidate), usage (finops), sessions (chats, ps),\n"
-            "                    soar, hips, certify, skills, git-sync (pull, push)\n"
+            "                    soar, jepa, hips, certify, skills, git-sync (pull, push)\n"
         )
         if show_all_aliases
         else "Run 'skb --help-all' to also display project scaffolding, quality gates, and advanced tooling."
@@ -130,6 +130,11 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit machine-readable JSON search results for AI coding agents",
+    )
+    p_search.add_argument(
+        "--jepa",
+        action="store_true",
+        help="Fuse Vault JEPA latent predictions as a 5th retrieval channel",
     )
 
     p_hips = (
@@ -430,6 +435,60 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     p_splat.add_argument("target", nargs="?", default=".", help="Target directory or `.ply`/`.splat` file")
     p_splat.add_argument("--json", action="store_true", help="Output JSON")
 
+    p_jepa = (
+        sub.add_parser(
+            "jepa",
+            help="Unified Vault JEPA: latent world-model training, rollouts, gap discovery & surprise detection",
+        )
+        if show_all_aliases
+        else sub.add_parser("jepa")
+    )
+    p_jepa.add_argument(
+        "jepa_cmd",
+        nargs="?",
+        choices=(
+            "train",
+            "predict",
+            "plan",
+            "search",
+            "gaps",
+            "surprise",
+            "bench",
+            "hjepa",
+            "soar",
+            "heal",
+            "code",
+            "status",
+        ),
+        default="status",
+        help="JEPA subcommand (train, predict, plan, search, gaps, surprise, bench, hjepa, soar, heal, code, status)",
+    )
+    p_jepa.add_argument("target", nargs="?", help="Query, start note, note rel_path, or repo dir")
+    p_jepa.add_argument("goal", nargs="?", help="Goal note/query (`plan`) or seed symbol (`code`)")
+    p_jepa.add_argument(
+        "--action",
+        choices=("WIKILINK", "NEXT_SECTION", "EPISODIC_NEXT", "EPISODIC_TO_SEMANTIC"),
+        default=None,
+        help="Transition action type",
+    )
+    p_jepa.add_argument("--steps", type=int, default=1, help="Rollout steps for `skb jepa predict` / `plan`")
+    p_jepa.add_argument("--beam", type=int, default=4, help="Beam width for `skb jepa plan` (default: 4)")
+    p_jepa.add_argument("-n", "--limit", type=int, default=5, help="Max results to return")
+    p_jepa.add_argument("--epochs", type=int, default=25, help="Training epochs (default: 25)")
+    p_jepa.add_argument("--latent-dim", type=int, default=48, help="Latent dimension d (default: 48)")
+    p_jepa.add_argument("--proj-dim", type=int, default=128, help="Input projection dim before encoder (0 = none)")
+    p_jepa.add_argument(
+        "--backend",
+        choices=("stdlib", "torch", "auto"),
+        default="stdlib",
+        help="Compute backend (default: stdlib zero-dependency)",
+    )
+    p_jepa.add_argument("--seed", type=int, default=42, help="Deterministic RNG seed (default: 42)")
+    p_jepa.add_argument("--evr", help="Optional output path to seal JEPA checkpoint into an .evr capsule")
+    p_jepa.add_argument("--apply", action="store_true", help="Apply Lyapunov-gated changes in `skb jepa heal`")
+    p_jepa.add_argument("--persist-chunks", action="store_true", help="Persist compiled Soar chunks in `skb jepa soar`")
+    p_jepa.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     return parser
 
 
@@ -537,6 +596,10 @@ def main(argv: list[str] | None = None) -> None:
         cmd_falsify(args)
     elif args.cmd == "splat":
         cmd_splat(args)
+    elif args.cmd == "jepa":
+        from sovereign_kb.jepa import cmd_jepa
+
+        cmd_jepa(args, resolve_vault_dir)
     else:
         cmd_status(args)
 
