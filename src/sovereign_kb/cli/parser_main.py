@@ -55,7 +55,7 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
             "  Everyday Memory : init, capture, search, ask, sync, verify (doctor), dashboard (ui), status, me\n"
             "  Project & Gate  : scaffold (new), gwi (audit, goldwood)\n"
             "  Advanced & Ops  : rsi (evolve, tune, consolidate), usage (finops), sessions (chats, ps),\n"
-            "                    soar, jepa, hips, certify, skills, git-sync (pull, push)\n"
+            "                    soar, jepa, train, hips, certify, skills, git-sync (pull, push)\n"
         )
         if show_all_aliases
         else "Run 'skb --help-all' to also display project scaffolding, quality gates, and advanced tooling."
@@ -489,6 +489,39 @@ def build_parser(show_all_aliases: bool = False) -> argparse.ArgumentParser:
     p_jepa.add_argument("--persist-chunks", action="store_true", help="Persist compiled Soar chunks in `skb jepa soar`")
     p_jepa.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    p_train = (
+        sub.add_parser("train", help="Build datasets, train models, serve & audit/search from your vault (F-24)")
+        if show_all_aliases
+        else sub.add_parser("train")
+    )
+    p_train.add_argument(
+        "train_cmd",
+        nargs="?",
+        choices=("datasets", "embedder", "critic", "nanolm", "serve", "audit", "search"),
+        default="datasets",
+        help="Training subcommand (datasets, embedder, critic, nanolm, serve, audit, search)",
+    )
+    p_train.add_argument("target", nargs="?", help="File/prompt for `audit` or query for `search`")
+    p_train.add_argument(
+        "--track",
+        choices=("retrieval", "critic", "twin", "nanolm"),
+        default="retrieval",
+        help="Dataset track for `skb train datasets`",
+    )
+    p_train.add_argument("--scope", choices=("public-safe", "private-local"), default="public-safe")
+    p_train.add_argument("--data-dir", help="Dataset directory (default: .kb/training/datasets)")
+    p_train.add_argument("--out-dir", help="Output directory for checkpoints & results (default: .kb/training)")
+    p_train.add_argument("--api-base", default="http://127.0.0.1:8000/v1", help="OpenAI-compatible teacher URL")
+    p_train.add_argument("--model", default="qwen3.6-35b-a3b", help="Teacher or base model ID")
+    p_train.add_argument("--api-key", default="", help="Optional teacher API key")
+    p_train.add_argument("--epochs", type=int, default=3)
+    p_train.add_argument("--steps", type=int, default=1200)
+    p_train.add_argument("--port", type=int, default=8012)
+    p_train.add_argument("--url", help="Model server URL (default: http://127.0.0.1:8012)")
+    p_train.add_argument("--ssh-host", help="Optional SSH host to tunnel :8012 when remote")
+    p_train.add_argument("-n", "--limit", type=int, default=8, help="Max results for `skb train search`")
+    p_train.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     return parser
 
 
@@ -600,6 +633,10 @@ def main(argv: list[str] | None = None) -> None:
         from sovereign_kb.jepa import cmd_jepa
 
         cmd_jepa(args, resolve_vault_dir)
+    elif args.cmd == "train":
+        from sovereign_kb.training import cmd_train
+
+        cmd_train(args, resolve_vault_dir)
     else:
         cmd_status(args)
 

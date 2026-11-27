@@ -149,6 +149,7 @@ skb dashboard --export
 | Run AST mutation kill-ratio probe, property-fuzz check (`GWI-SCI-06`) & formal proof verifier (`GWI-SCI-07`) | `skb falsify . --run-mutations` |
 | Audit 3D Gaussian Splatting (`.ply`, `.splat`, `.ksplat`, `.spz`) assets for WebXR/Quest 3 budgets | `skb splat .` |
 | Train and query the Unified Vault JEPA world model (`train`, `predict`, `plan`, `search`, `gaps`, `surprise`, `bench`, `hjepa`, `soar`, `heal`, `code`, `status`) | `skb jepa status` |
+| Build privacy-filtered datasets, train 4 sovereign vault models & serve warm Critic/Embedder (`datasets`, `embedder`, `critic`, `nanolm`, `serve`, `audit`, `search`) | `skb train datasets --track retrieval` |
 | Show vault & index status | `skb status` |
 | Run Autonomous Human-Like Video Playback Audit (native `.mp4` stream to Bedrock Nova Pro + Triad keyframes) | `skb video audit artifacts/walkthrough_compressed.mp4` |
 | Run pre-seal cross-lineage adversarial challenge, independence calibration (`N_eff >= 1.80`), and human adjudication (`skb elenchus` / `organon elenchus`) | `skb elenchus run .` |
@@ -198,6 +199,8 @@ Beyond everyday note capture and search, `sovereign-kb` ships four advanced engi
    - Closed-loop retrieval policy tuning (`skb evolve`), compile-time prompt/exemplar optimization (`skb rsi compile-prompts`), parametric Sleep-Wake LoRA/GRPO dataset export (`skb rsi sleep-consolidate`), Soar 9.6 symbolic chunking (`skb soar`), 20-domain `rustc` certification (`skb certify rust`), multi-agent token FinOps (`skb usage`), and live session & subagent liveness auditing (`skb sessions`).
 5. **[Unified Vault JEPA (`skb jepa`)](docs/JEPA.md)**
    - Action-conditioned Joint-Embedding Predictive Architecture over `[[wikilink]]`, section, and episodic transitions (`skb jepa train`, `skb jepa predict`, `skb jepa gaps`, `skb jepa surprise`, `skb jepa bench`) with sphere-scaled VICReg anti-collapse regularization and zero-dependency stdlib + optional PyTorch backends.
+6. **[Sovereign Vault Training & Distillation (`skb train`)](docs/TRAINING.md)**
+   - Privacy-filtered 4-track vault training pipeline (`retrieval`, `critic` ORPO LoRA, `twin` distillation, and `nanolm` MLX) with deterministic SHA-256 splits and warm `/embed` + `/critic` serving.
 
 Also included in every full starter vault (`src/sovereign_kb/starter_vault/02-operating-system/`):
 - [The 6-Pillar Deterministic Autonomous Engineering Framework](src/sovereign_kb/starter_vault/02-operating-system/autonomous-engineering-framework.md)
