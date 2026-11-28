@@ -96,6 +96,9 @@ def _audit_structural_regularity(ui_text: str, css_text: str = "") -> dict[str, 
 
 
 _NON_UI_DIRS = frozenset({"docs", "artifacts", "scripts", "evidence", "corpus"})
+# Vendored third-party code (e.g. KaTeX's stylesheet with ~90 math font sizes) is not authored UI:
+# it never counts toward Law L7 regularity or the UX lens, even when it is the only UI present.
+_VENDOR_DIRS = frozenset({"vendor", "third_party", "third-party"})
 _EMBEDDED_HTML_RE = re.compile(r"<!doctype\s+html|<html[\s>]", re.IGNORECASE)
 
 
@@ -107,7 +110,11 @@ def _discover_ui_files(root: Path) -> tuple[list[Path], list[Path]]:
     real pixels to users, so they must be held to the same browser-evidence requirements
     (responsive sheet, CTA/steps telemetry, L7 regularity) as hand-written HTML.
     """
-    all_web_ui = _iter_source_files(root, (".tsx", ".jsx", ".vue", ".css", ".html", ".svelte"))
+    all_web_ui = [
+        p
+        for p in _iter_source_files(root, (".tsx", ".jsx", ".vue", ".css", ".html", ".svelte"))
+        if not any(part in _VENDOR_DIRS for part in p.relative_to(root).parts)
+    ]
     app_web_ui = [p for p in all_web_ui if not any(part in _NON_UI_DIRS for part in p.relative_to(root).parts)]
     web_ui_files = app_web_ui if app_web_ui else all_web_ui
     py_ui_files = [p for p in _iter_source_files(root, (".py",)) if "dashboard" in p.name]

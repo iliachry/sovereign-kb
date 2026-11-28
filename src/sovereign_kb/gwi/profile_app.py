@@ -19,7 +19,12 @@ from sovereign_kb.gwi_core import (
     compute_snrc,
 )
 
-from .lenses_laws import _audit_human_wedge_anti_palantir, _audit_structural_regularity, _discover_ui_files
+from .lenses_laws import (
+    _VENDOR_DIRS,
+    _audit_human_wedge_anti_palantir,
+    _audit_structural_regularity,
+    _discover_ui_files,
+)
 from .utils import (
     _EMPTY_SCAN_CODE_SUFFIXES,
     _JS_RANDOM_RE,
@@ -187,7 +192,11 @@ def evaluate_app_profile(
 
     # 3. Accessibility & Modern Web Floor (A)
     _non_ui_dirs = {"docs", "artifacts", "scripts", "evidence", "corpus"}
-    all_ui_files = _iter_source_files(root, (".tsx", ".jsx", ".html", ".vue", ".svelte"))
+    all_ui_files = [
+        p
+        for p in _iter_source_files(root, (".tsx", ".jsx", ".html", ".vue", ".svelte"))
+        if not any(part in _VENDOR_DIRS for part in p.relative_to(root).parts)
+    ]
     app_ui_files = [p for p in all_ui_files if not any(part in _non_ui_dirs for part in p.relative_to(root).parts)]
     ui_files = app_ui_files if app_ui_files else all_ui_files
     ui_text = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in ui_files)
@@ -210,7 +219,9 @@ def evaluate_app_profile(
         )
 
     # 4. Visual Craft, Token Architecture & Law L7 Regularity (V)
-    all_css_files = _iter_source_files(root, (".css",))
+    all_css_files = [  # vendored third-party stylesheets are not authored UI (Law L7)
+        p for p in _iter_source_files(root, (".css",)) if not any(part in _VENDOR_DIRS for part in p.relative_to(root).parts)
+    ]
     app_css_files = [p for p in all_css_files if not any(part in _non_ui_dirs for part in p.relative_to(root).parts)]
     css_files = app_css_files if app_css_files else all_css_files
     css_text = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in css_files)
