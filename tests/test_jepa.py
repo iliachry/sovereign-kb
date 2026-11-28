@@ -327,6 +327,13 @@ def test_jepa_hierarchical_soar_heal_and_code(tmp_path: Path) -> None:
     assert sres["replay_impasses"] == 0
     assert sres["zero_impasse_replay"] is True
     assert len(sres["compiled_chunks"]) >= 1
+    # The tie is decided in S2 by the shared deliberation loop using JEPA energy (no hand-written S2 rule)
+    delib = sres["deliberations"][0]
+    assert delib["s2_rule"].startswith("neuro*s2*skb-jepa-tie*prefer-select-doc")
+    assert all(n.startswith(f"chunk*{delib['s2_rule']}*") for n in sres["compiled_chunks"])
+    if delib["engine"] == "jepa":
+        top2 = sorted(sres["scored_candidates"][:2], key=lambda c: c["jepa_energy"])
+        assert sres["winner_doc"] == top2[0]["rel_path"]
 
     # 3. Closed-loop Lyapunov-gated graph heal (dry-run + apply)
     dry = heal_vault_links_with_jepa(vault, max_edges=2, apply=False)

@@ -69,7 +69,9 @@ skb jepa bench
 # Train Hierarchical Chunk <-> Document H-JEPA (.kb/hjepa_model.json)
 skb jepa hjepa
 
-# Neuro-Symbolic Soar <-> JEPA impasse resolution (System 1 energy + System 2 chunk* compilation)
+# Neuro-Symbolic Soar <-> JEPA impasse resolution: the shared S1 -> S2 deliberation loop
+# (sovereign_kb.soar.deliberation) picks the lowest-energy document inside S2, compiles a
+# general S2 rule, chunks it, and replays with 0 impasses (System 1 energy + System 2 chunk*)
 skb jepa soar "Goldwood Index"
 
 # Closed-loop Lyapunov-gated graph curation (dry-run by default; --apply verifies 6-Gate + J_after >= J_before)

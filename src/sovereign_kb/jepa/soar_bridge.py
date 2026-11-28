@@ -8,6 +8,7 @@ from typing import Any
 
 from sovereign_kb.retrieval import retrieve_from_vault
 from sovereign_kb.soar.chunk_store import ChunkStore
+from sovereign_kb.soar.deliberation import EnergyResolver, solve
 from sovereign_kb.soar.kernel import SoarKernel
 from sovereign_kb.soar.parser import format_production
 from sovereign_kb.soar.vault_agent import learned_chunks_path
@@ -99,10 +100,7 @@ def resolve_impasse_with_jepa(
             }
         )
 
-    scored.sort(key=lambda item: (-item["jepa_score"], -item["rrf_score"], item["rel_path"]))
-    # Ensure strict dominance between top-2 so Soar substate S2 resolves cleanly without tie ambiguity
-    if len(scored) >= 2 and scored[0]["jepa_score"] <= scored[1]["jepa_score"]:
-        scored[0]["jepa_score"] = scored[1]["jepa_score"] + 1
+    scored.sort(key=lambda item: (item["jepa_energy"], -item["rrf_score"], item["rel_path"]))
 
     winner = scored[0]
     runner_up = scored[1] if len(scored) >= 2 else None
@@ -121,10 +119,14 @@ def resolve_impasse_with_jepa(
             "scored_candidates": scored,
         }
 
-    c1_sym = f"C1-{winner['doc_sym']}"
-    c2_sym = f"C2-{runner_up['doc_sym']}"
-    w_score = winner["jepa_score"]
-    l_score = runner_up["jepa_score"]
+    # Project the top-2 candidates into a Soar tie. No S2 evaluation rule is written by hand: the
+    # shared deliberation loop asks VaultJEPA (lowest energy wins) while the agent sits in S2, compiles
+    # the choice into a general S2 rule, chunks it, and replays with the chunk only.
+    top = scored[:2]
+    sym_to_cand = {f"C{i + 1}-{c['doc_sym']}": c for i, c in enumerate(top)}
+    energy_by_sym = {sym: float(c["jepa_energy"]) for sym, c in sym_to_cand.items()}
+    cand_wmes = " ".join(f"^cand <c{i + 1}>" for i in range(len(top)))
+    cand_objs = "\n".join(f"    (<c{i + 1}> ^doc {sym})" for i, sym in enumerate(sym_to_cand))
 
     soar_src = f"""
 sp {{jepa-soar*propose*init
@@ -139,33 +141,16 @@ sp {{jepa-soar*apply*init
     (state <s> ^operator <o>)
     (<o> ^name init-jepa-tie)
 -->
-    (<s> ^name skb-jepa-tie ^phase tie-pending ^cand <c1> ^cand <c2>)
-    (<c1> ^doc {c1_sym} ^jepa-score {w_score})
-    (<c2> ^doc {c2_sym} ^jepa-score {l_score})
+    (<s> ^name skb-jepa-tie ^phase tie-pending {cand_wmes})
+{cand_objs}
 }}
 
-sp {{jepa-soar*propose*select-winner
-    (state <s> ^name skb-jepa-tie ^phase tie-pending ^cand <c1>)
-    (<c1> ^doc {c1_sym} ^jepa-score {w_score})
+sp {{jepa-soar*propose*select-doc
+    (state <s> ^name skb-jepa-tie ^phase tie-pending ^cand <c>)
+    (<c> ^doc <d>)
 -->
     (<s> ^operator <o> +)
-    (<o> ^name select-doc ^doc {c1_sym} ^jepa-score {w_score})
-}}
-
-sp {{jepa-soar*propose*select-runner-up
-    (state <s> ^name skb-jepa-tie ^phase tie-pending ^cand <c2>)
-    (<c2> ^doc {c2_sym} ^jepa-score {l_score})
--->
-    (<s> ^operator <o> +)
-    (<o> ^name select-doc ^doc {c2_sym} ^jepa-score {l_score})
-}}
-
-sp {{jepa-soar*substate*prefer-lower-jepa-energy
-    (state <s2> ^superstate <ss> ^impasse tie ^item <o1> ^item <o2>)
-    (<o1> ^name select-doc ^jepa-score {w_score})
-    (<o2> ^name select-doc ^jepa-score {l_score})
--->
-    (<ss> ^operator <o1> > <o2>)
+    (<o> ^name select-doc ^doc <d>)
 }}
 
 sp {{jepa-soar*apply*select-doc
@@ -178,7 +163,7 @@ sp {{jepa-soar*apply*select-doc
 }}
 
 sp {{jepa-soar*detect*goal
-    (state <s> ^name skb-jepa-tie ^phase resolved ^selected-doc {c1_sym})
+    (state <s> ^name skb-jepa-tie ^phase resolved ^selected-doc <d>)
 -->
     (<s> ^goal-achieved yes)
     (halt)
@@ -187,12 +172,18 @@ sp {{jepa-soar*detect*goal
 
     kernel = SoarKernel(enable_chunking=True)
     kernel.load_soar_code(soar_src, clear_existing=True)
-    first_run = kernel.run_to_completion(max_cycles=25)
-    replay_run = kernel.replay_with_chunks(max_cycles=25)
+    resolver = EnergyResolver(lambda attrs: energy_by_sym.get(str(attrs.get("doc", ""))), label="jepa")
+    report = solve(kernel, resolver, max_cycles=25)
 
-    first_impasses = int(first_run.get("total_impasses_count", 0))
-    replay_impasses = int(replay_run.get("total_impasses_count", 0))
-    compiled_chunks = list(kernel.learned_chunks)
+    first_impasses = int(report["run1_impasses"])
+    replay_impasses = int(report["replay_impasses"])
+    compiled_chunks = [c["name"] for c in report["chunks"]]
+    chosen_sym = next(
+        (str(w.value) for w in kernel.wmes.values() if w.id == "S1" and w.attr == "selected-doc"),
+        None,
+    )
+    chosen = sym_to_cand.get(chosen_sym or "", winner)
+    runner = next((c for c in top if c is not chosen), runner_up)
 
     if persist_chunks and compiled_chunks and v_root.is_dir():
         try:
@@ -211,13 +202,16 @@ sp {{jepa-soar*detect*goal
 
     return {
         "query": query,
-        "resolved": True,
-        "winner_doc": winner["rel_path"],
-        "winner_jepa_energy": winner["jepa_energy"],
-        "runner_up_doc": runner_up["rel_path"],
+        "resolved": bool(report["solved"]),
+        "winner_doc": chosen["rel_path"],
+        "winner_jepa_energy": chosen["jepa_energy"],
+        "runner_up_doc": runner["rel_path"],
         "first_run_impasses": first_impasses,
         "replay_impasses": replay_impasses,
-        "zero_impasse_replay": (first_impasses >= 1 and replay_impasses == 0 and len(compiled_chunks) >= 1),
+        "zero_impasse_replay": (
+            first_impasses >= 1 and replay_impasses == 0 and bool(report["replay_solved"]) and len(compiled_chunks) >= 1
+        ),
         "compiled_chunks": compiled_chunks,
         "scored_candidates": scored,
+        "deliberations": report["deliberations"],
     }
