@@ -28,7 +28,8 @@ from .ast_nodes import (
     RHSFunctionStandalone,
     Var,
 )
-from .kernel import SoarKernel
+from .deliberation import Decision, solve
+from .kernel import SoarKernel, _is_identifier
 from .neuro_symbolic import NeuroSymbolicBridge
 from .parser import format_production, parse_soar
 from .transpiler import transpile_soar_to_python
@@ -738,20 +739,26 @@ def _sanitize_soar_sym(raw: str, fallback: str = "doc") -> str:
     cleaned = "".join(ch if (ch.isalnum() or ch in "-_") else "-" for ch in str(raw).strip()).strip("-")
     if not cleaned or cleaned[0].isdigit():
         return f"{fallback}-{cleaned}" if cleaned else fallback
+    if _is_identifier(cleaned):
+        # `A1`-style symbols are Soar object identifiers: as values they would be treated as links, not constants
+        return f"{cleaned}-{fallback}"
     return cleaned
 
 
 def _build_dynamic_tie_soar_rules(
     candidates: list[dict[str, Any]], tier_weights: dict[str, int]
-) -> tuple[str, dict[str, dict[str, Any]]]:
+) -> tuple[str, dict[str, dict[str, Any]], dict[str, int]]:
     """
-    Build a Soar 9.6 program that projects ALL competing `candidates` into `S1`,
-    infers `i-support` canonical status, creates an operator tie between the top
-    contenders, resolves the tie in `S2` by epistemic authority (and score rank),
-    and commits `(S1 ^selected-doc <doc>)`.
+    Build a Soar 9.6 program that projects ALL competing `candidates` into `S1` and proposes a
+    `select-candidate` operator for each one, so every candidate competes in the same tie.
+
+    No S2 evaluation rule is written here: the shared deliberation loop
+    (`sovereign_kb.soar.deliberation.solve`) decides the tie inside `S2` with
+    :class:`_GovernanceResolver` (epistemic authority, then retrieval score), compiles a general
+    S2 rule over `^tier` / `^authority`, and chunks it. Returns `(source, doc_map, rank_by_doc)`.
     """
     if len(candidates) < 2:
-        return "", {}
+        return "", {}, {}
 
     scored_entries: list[tuple[int, float, int, str, str, dict[str, Any]]] = []
     used_docs: set[str] = set()
@@ -766,25 +773,15 @@ def _build_dynamic_tie_soar_rules(
         used_docs.add(doc_sym)
         scored_entries.append((auth, score, -idx, doc_sym, tier_sym, c))
 
-    # Order all supplied candidates by epistemic authority and score so even a 3rd+ candidate is evaluated
+    # Rank by epistemic authority, then score, then original order (first supplied wins exact ties)
     ranked_entries = sorted(scored_entries, key=lambda x: (x[0], x[1], x[2]), reverse=True)
-    top_entry = ranked_entries[0]
-    runner_entry = ranked_entries[1]
-
-    hi_auth, _, _, hi_doc, hi_tier, _ = top_entry
-    lo_auth, _, _, lo_doc, lo_tier, _ = runner_entry
-
-    eff_hi_auth = hi_auth if hi_auth != lo_auth else hi_auth + 1
-    eff_lo_auth = lo_auth
-
+    rank_by_doc = {entry[3]: i for i, entry in enumerate(ranked_entries)}
     doc_map = {entry[3]: entry[5] for entry in ranked_entries}
     cand_vars = " ".join(f"^cand <c{i + 1}>" for i in range(len(ranked_entries)))
-    cand_wmes_lines = []
-    for i, entry in enumerate(ranked_entries):
-        e_auth, _, _, e_doc, e_tier, _ = entry
-        eff_a = eff_hi_auth if i == 0 else (eff_lo_auth if i == 1 else min(e_auth, eff_lo_auth))
-        cand_wmes_lines.append(f"    (<c{i + 1}> ^tier {e_tier} ^authority {eff_a} ^doc {e_doc})")
-    cand_wmes_block = "\n".join(cand_wmes_lines)
+    cand_wmes_block = "\n".join(
+        f"    (<c{i + 1}> ^tier {e_tier} ^authority {e_auth} ^doc {e_doc})"
+        for i, (e_auth, _, _, e_doc, e_tier, _) in enumerate(ranked_entries)
+    )
 
     soar_src = f"""
 sp {{vault-governance*propose*initialize
@@ -805,40 +802,13 @@ sp {{vault-governance*apply*initialize
 {cand_wmes_block}
 }}
 
-sp {{vault-governance*elaborate*epistemic-priority
-    "Infer i-supported canonical status for highest-authority candidate"
-    :i-support
-    (state <s> ^name skb-vault ^cand <c>)
-    (<c> ^authority {eff_hi_auth})
--->
-    (<c> ^canonical yes)
-}}
-
-sp {{vault-governance*propose*select-os-candidate
-    "Propose selecting the canonical higher-authority candidate (requires i-supported ^canonical yes)"
-    (state <s> ^name skb-vault ^phase retrieval-tie ^cand <c1>)
-    (<c1> ^tier {hi_tier} ^authority {eff_hi_auth} ^canonical yes)
+sp {{vault-governance*propose*select-candidate
+    "Propose selecting each candidate (all candidates compete in one tie impasse)"
+    (state <s> ^name skb-vault ^phase retrieval-tie ^cand <c>)
+    (<c> ^tier <t> ^authority <a>)
 -->
     (<s> ^operator <o> +)
-    (<o> ^name select-candidate ^cand <c1> ^tier {hi_tier} ^authority {eff_hi_auth})
-}}
-
-sp {{vault-governance*propose*select-episodic-candidate
-    "Competing proposal: select runner-up candidate (triggers Tie Impasse in S1)"
-    (state <s> ^name skb-vault ^phase retrieval-tie ^cand <c2>)
-    (<c2> ^tier {lo_tier} ^authority {eff_lo_auth})
--->
-    (<s> ^operator <o> +)
-    (<o> ^name select-candidate ^cand <c2> ^tier {lo_tier} ^authority {eff_lo_auth})
-}}
-
-sp {{vault-governance*substate*prefer-higher-authority
-    "In tie substate S2, assert strict dominance for higher-authority candidate"
-    (state <s2> ^superstate <ss> ^impasse tie ^item <o1> ^item <o2>)
-    (<o1> ^name select-candidate ^authority {eff_hi_auth})
-    (<o2> ^name select-candidate ^authority {eff_lo_auth})
--->
-    (<ss> ^operator <o1> > <o2>)
+    (<o> ^name select-candidate ^cand <c> ^tier <t> ^authority <a>)
 }}
 
 sp {{vault-governance*apply*select-candidate
@@ -853,14 +823,38 @@ sp {{vault-governance*apply*select-candidate
 }}
 
 sp {{vault-governance*detect*goal
-    "Halt once winning candidate is verified in S1"
-    (state <s> ^name skb-vault ^phase verified ^selected-tier {hi_tier} ^selected-doc {hi_doc})
+    "Halt once a winning candidate is verified in S1"
+    (state <s> ^name skb-vault ^phase verified ^selected-doc <d>)
 -->
     (<s> ^goal-achieved yes)
     (halt)
 }}
 """
-    return soar_src, doc_map
+    return soar_src, doc_map, rank_by_doc
+
+
+class _GovernanceResolver:
+    """S2 resolver for retrieval ties: highest epistemic authority, then highest retrieval score."""
+
+    name = "authority"
+
+    def __init__(self, rank_by_doc: dict[str, int]) -> None:
+        self.rank_by_doc = rank_by_doc
+
+    def _rank(self, kernel: SoarKernel, op: str) -> int:
+        cand = next((str(w.value) for w in kernel.wmes.values() if w.id == op and w.attr == "cand"), "")
+        doc = next((str(w.value) for w in kernel.wmes.values() if w.id == cand and w.attr == "doc"), "")
+        return self.rank_by_doc.get(doc, len(self.rank_by_doc))
+
+    def choose(self, kernel: SoarKernel, impasse: Any) -> Decision:
+        ranks = {op: self._rank(kernel, op) for op in sorted(impasse.candidates)}
+        winner = min(ranks, key=lambda op: (ranks[op], op))
+        return Decision(
+            winner=winner,
+            rationale=f"rank {ranks[winner]} by epistemic authority, then retrieval score",
+            engine=self.name,
+            scores={op: float(r) for op, r in ranks.items()},
+        )
 
 
 def resolve_retrieval_tie_with_soar(
@@ -871,7 +865,7 @@ def resolve_retrieval_tie_with_soar(
 ) -> dict[str, Any]:
     """
     Project competing 4-way RRF retrieval candidates into Soar Working Memory (`S1`),
-    detect and resolve a `tie` impasse via Substate `S2` (or `NeuroSymbolicBridge`),
+    detect and resolve a `tie` impasse inside Substate `S2` via the shared deliberation loop,
     and compile an Explanation-Based `chunk*` rule for 0-impasse future replay.
     """
     if not candidates:
@@ -918,7 +912,7 @@ def resolve_retrieval_tie_with_soar(
         "distillation-ledger": 1,
         "episodic": 1,
     }
-    soar_program, doc_map = _build_dynamic_tie_soar_rules(candidates, tier_weights)
+    soar_program, doc_map, rank_by_doc = _build_dynamic_tie_soar_rules(candidates, tier_weights)
 
     kernel = SoarKernel(enable_chunking=True)
     kernel.load_soar_code(soar_program, clear_existing=True)
@@ -947,9 +941,8 @@ def resolve_retrieval_tie_with_soar(
         except Exception:
             pass
 
-    first_run = kernel.run_to_completion(max_cycles=25)
-    replay_run = kernel.replay_with_chunks(max_cycles=25)
-    goal_ok = _has_goal_achieved_wme(kernel)
+    report = solve(kernel, _GovernanceResolver(rank_by_doc), max_cycles=25)
+    goal_ok = bool(report["solved"]) and _has_goal_achieved_wme(kernel)
 
     selected_doc = (
         next(
@@ -1003,15 +996,16 @@ def resolve_retrieval_tie_with_soar(
     return {
         "query": query,
         "preloaded_chunks": preloaded_chunks,
-        "first_run_impasses": first_run["total_impasses_count"],
-        "replay_impasses": replay_run["total_impasses_count"],
-        "zero_impasse_replay": bool(goal_ok and replay_run["total_impasses_count"] == 0),
+        "first_run_impasses": report["run1_impasses"],
+        "replay_impasses": report["replay_impasses"],
+        "zero_impasse_replay": bool(goal_ok and report["replay_impasses"] == 0),
         "goal_achieved": goal_ok,
         "selected_doc": selected_doc,
         "selected_tier": selected_tier,
         "chunks_compiled": len(compiled_chunks) if goal_ok else 0,
         "chunk_names": [p.name for p in kernel.productions.values() if _is_valid_learned_chunk(p)] if goal_ok else [],
         "reranked_candidates": reranked,
+        "deliberations": report["deliberations"],
     }
 
 
