@@ -24,7 +24,10 @@ class NeuroSymbolicBridge:
         endpoints: list[str] | None = None,
         model: str = "qwen3.6-35b-a3b",
         timeout_sec: float = 1.5,
+        api_key: str | None = None,
     ) -> None:
+        # The gx10 proxy on :8001 rejects requests without a bearer key.
+        self.api_key = api_key or os.environ.get("SKB_LLM_API_KEY") or os.environ.get("GX10_API_KEY") or None
         env_ep = os.environ.get("SKB_LLM_ENDPOINT", "").strip()
         default_eps = ["http://127.0.0.1:8000/v1/chat/completions"]
         if env_ep and env_ep not in default_eps:
@@ -253,15 +256,20 @@ class NeuroSymbolicBridge:
                 ],
                 "max_tokens": 220,
                 "temperature": 0.1,
+                # Qwen3 on SGLang: answer directly so the rule fits in the token budget.
+                "chat_template_kwargs": {"enable_thinking": False},
             }
         ).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
         for url in self.endpoints:
             try:
                 req = urllib.request.Request(
                     url,
                     data=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
